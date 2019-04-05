@@ -4,20 +4,23 @@ move aprs data onto glideport.aero
 starting from BB's (shell) code, and using that + aprs.fi api as guide.
 
 TODO:
-1 this should probably read a config file with the user callsigns : IEMI pairs, maybe other info (aprs api keys
+1 this should probably read a config file with the user callsigns : IEMI pairs, maybe other info (aprs.fi api keys, if we use that)
 2 needs a loop for pushing data
 3 not sure how often we can actually read data from aprs.fi - will need to talk to him(?) and see about rates etc (or go to ARPS-IS)
 4 add installation instructions - here or in a github md file
+
+NOTE: it's problematic having a canned example here, for two reasons:
+1. ultimately we will be pushing to a live website, which i don't want to contaminate.
+2. the real packets must have some not so public info - IEMI values.
 """
 
+import time
 import requests
 import json
+import aprslib
 
 
-class APRSIS2GP(object):
-	"""
-	get the aprs packets directly from aprs-is
-	"""
+class APRSBase(object):
 	
 	def __init__(self, ids_to_be_tracked):
 		"""
@@ -30,7 +33,10 @@ class APRSIS2GP(object):
 	
 	def reset(self):
 		self.locations = []
-		
+	
+	def get_loc(self):
+		raise NotImplementedError
+	
 	def create_gpaero_packets(self):
 		"""
 		take locations, convert ids to IMEI, create json for uploading to gpaero
@@ -62,9 +68,52 @@ class APRSIS2GP(object):
 			except Exception as e:
 				print 'failed due to ', e, ' raw:\n', entry
 	
+
+class APRSIS2GP(APRSBase):
+	"""
+	get the aprs packets directly from aprs-is
+	"""
+	
+	def __init__(self, ids_to_be_tracked, callsign, **kwargs):
+		"""
+		ids : a dictionary of callsign : IMEI items.
+		aprs_api_key : said key for a valid aprs.fi user id
+		"""
+		super(APRSIS2GP, self).__init__(ids_to_be_tracked)
+		self.AIS = aprslib.IS(callsign)#, host='noam.aprs2.net', port=14580)
+		self.delay_before_check = kwargs.get('delay', 0.5)
+		self.verbose = kwargs.get('verbose', False)
+		
+	def filter_callsigns(self, packet):
+		if self.verbose:
+			print packet
+		try:
+			ppac = aprslib.parse(packet)
+			print 'parsed :\n', ppac
+			if ppac['from'] in self.ids_to_be_tracked.keys():
+				self.locations.append({'srccall' : ppac['from'],
+							'long' : ppac['longitude'],
+							'lat' : ppac['latitude'],
+							'altitude' : ppac['altitude'],
+							'timeStamp' : ppac['timestamp']})
+			elif self.verbose:
+				print 'from {:}, skip'.format(ppac['from'])
+		except Exception as e:
+			print 'filter_callsigns failed to parse packet due to %s' % e
+		
+	def get_loc(self):
+		self.AIS.connect()
+		# necessary
+		time.sleep(self.delay_before_check)
+		print 'connected'
+		self.AIS.consumer(self.filter_callsigns, raw=True, blocking=False)
+		print 'found\n', self.locations
+		self.AIS.close()
+		print 'closed'
+	
 		
 
-class APRSFI2GP(APRSIS2GP):
+class APRSFI2GP(APRSBase):
 	"""
 	get data from aprs.fi, send to gpaero.
 	NOTE: very useful for initial coding and personal experimentation, but the legality of using the aprs.fi api beyond that has to be checked on a case by case basis.
@@ -77,7 +126,6 @@ class APRSFI2GP(APRSIS2GP):
 		"""
 		super(APRSFI2GP, self).__init__(ids_to_be_tracked)
 		self.aprs_api_key = aprs_api_key
-		
 	
 	def get_loc(self):
 		"""
