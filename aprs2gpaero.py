@@ -34,7 +34,7 @@ class APRSBase(object):
 	
 	def reset(self, **kwargs):
 		self.locations = []
-		self.log_file = tempfile.NamedTemporaryFile(mode='w+b', bufsize=-1, suffix='.jsons', prefix=time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'), dir=None, delete=False)
+		self.log_file = tempfile.NamedTemporaryFile(mode='w+b', bufsize=-1, suffix='.jsons', prefix=time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S_'), dir=None, delete=False)
 		self.log_file.close()
 		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
