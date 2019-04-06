@@ -17,30 +17,69 @@ NOTE: it's problematic having a canned example here, for two reasons:
 import time
 import requests
 import json
+import tempfile
 import aprslib
 
 
 class APRSBase(object):
 	
-	def __init__(self, ids_to_be_tracked):
+	def __init__(self, ids_to_be_tracked, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		aprs_api_key : said key for a valid aprs.fi user id
 		"""
 		self.ids_to_be_tracked = ids_to_be_tracked
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
-		self.reset()
+		self.reset(**kwargs)
 	
-	def reset(self):
+	def reset(self, **kwargs):
 		self.locations = []
+		self.log_file = tempfile.NamedTemporaryFile(mode='w+b', bufsize=-1, suffix='.jsons', prefix=time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'), dir=None, delete=False)
+		self.log_file.close()
+		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
+		self.wait_between_checks = self.default_wait_between_checks
+		self.start_time = time.time()
 	
 	def get_loc(self):
 		raise NotImplementedError
 	
-	def create_gpaero_packets(self):
+	def monitor(self):
 		"""
-		take locations, convert ids to IMEI, create json for uploading to gpaero
-		should clear the locations once uploaded. (but maybe not this function?)
+		monitor the service every N seconds.
+		if failing, increase timeout (and notify user).
+		reset when successful.
+		abort on ctrl-c
+		"""
+		while True:
+			print 'monitor dt = {:0.1f} sec'.format(time.time() - self.start_time)
+			try:
+				self.get_loc()
+				self.send_locations()
+				time.sleep(self.wait_between_checks)
+				# reset wait if successful.
+				self.wait_between_checks = self.default_wait_between_checks
+			except KeyboardInterrupt:
+				print 'stopping upon request'
+				break
+			except Exception as e:
+				print 'Problem monitoring due to {:}, increasing wait time'
+				self.wait_between_checks *= 2
+	
+	def upload_packet_to_gpaero(self, json_s):
+		"""
+		not implemented yet; will do so later.
+		for now, just print it
+		"""
+		print 'would have uploaded ', json_s
+	
+	def send_locations(self):
+		"""
+		take locations
+		convert ids to IMEI
+		create json for uploading to gpaero
+		save json to local log file
+		send to gpaero.
+		clear the locations once uploaded
 		
 		sample json file : 
 		{"Version": "2.0", "Events": [{
@@ -57,16 +96,19 @@ class APRSBase(object):
 
 
 		"""
-		for entry in self.locations:
-			try:
-				d = {'Version' : 2.0,
-					'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
-								'timeStamp' : entry['time'],  # maybe status_lasttime, or lasttime - not sure what's better
-								'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
-					}
-				print json.dumps(d)
-			except Exception as e:
-				print 'failed due to ', e, ' raw:\n', entry
+		with open(self.log_file.name, 'ab'):
+			for entry in self.locations:
+				try:
+					json_s = json.dumps({'Version' : 2.0,
+						'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
+									'timeStamp' : entry['time'],  # maybe status_lasttime, or lasttime - not sure what's better
+									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
+						})
+					self.log_file.write(json_s + '\n')
+					self.upload_packet_to_gpaero(json_s)
+				except Exception as e:
+					print 'failed due to ', e, ' raw:\n', entry
+		self.locations = []
 	
 
 class APRSIS2GP(APRSBase):
@@ -79,7 +121,7 @@ class APRSIS2GP(APRSBase):
 		ids : a dictionary of callsign : IMEI items.
 		aprs_api_key : said key for a valid aprs.fi user id
 		"""
-		super(APRSIS2GP, self).__init__(ids_to_be_tracked)
+		super(APRSIS2GP, self).__init__(ids_to_be_tracked, **kwargs)
 		self.AIS = aprslib.IS(callsign)#, host='noam.aprs2.net', port=14580)
 		self.delay_before_check = kwargs.get('delay', 0.5)
 		self.verbose = kwargs.get('verbose', False)
@@ -89,7 +131,8 @@ class APRSIS2GP(APRSBase):
 			print packet
 		try:
 			ppac = aprslib.parse(packet)
-			print 'parsed :\n', ppac
+			if self.verbose:
+				print 'parsed :\n', ppac
 			if ppac['from'] in self.ids_to_be_tracked.keys():
 				self.locations.append({'srccall' : ppac['from'],
 							'long' : ppac['longitude'],
@@ -99,7 +142,7 @@ class APRSIS2GP(APRSBase):
 			elif self.verbose:
 				print 'from {:}, skip'.format(ppac['from'])
 		except Exception as e:
-			print 'filter_callsigns failed to parse packet due to %s' % e
+			print 'filter_callsigns failed to parse packet due to %s raw packet *%s*' % (e, packet)
 		
 	def get_loc(self):
 		self.AIS.connect()
@@ -119,12 +162,12 @@ class APRSFI2GP(APRSBase):
 	NOTE: very useful for initial coding and personal experimentation, but the legality of using the aprs.fi api beyond that has to be checked on a case by case basis.
 	"""
 	
-	def __init__(self, ids_to_be_tracked, aprs_api_key):
+	def __init__(self, ids_to_be_tracked, aprs_api_key, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		aprs_api_key : said key for a valid aprs.fi user id
 		"""
-		super(APRSFI2GP, self).__init__(ids_to_be_tracked)
+		super(APRSFI2GP, self).__init__(ids_to_be_tracked, **kwargs)
 		self.aprs_api_key = aprs_api_key
 	
 	def get_loc(self):
