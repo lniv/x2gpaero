@@ -14,6 +14,7 @@ NOTE: it's problematic having a canned example here, for two reasons:
 2. the real packets must have some not so public info - IEMI values.
 """
 
+import os
 import time
 import requests
 import json
@@ -34,8 +35,7 @@ class APRSBase(object):
 	
 	def reset(self, **kwargs):
 		self.locations = []
-		self.log_file = tempfile.NamedTemporaryFile(mode='w+b', bufsize=-1, suffix='.jsons', prefix=time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S_'), dir=None, delete=False)
-		self.log_file.close()
+		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'))
 		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
 		self.start_time = time.time()
@@ -96,7 +96,7 @@ class APRSBase(object):
 
 
 		"""
-		with open(self.log_file.name, 'ab'):
+		with open(self.log_filename, 'ab') as log_f:
 			for entry in self.locations:
 				try:
 					json_s = json.dumps({'Version' : 2.0,
@@ -104,7 +104,7 @@ class APRSBase(object):
 									'timeStamp' : entry['time'],  # maybe status_lasttime, or lasttime - not sure what's better
 									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
 						})
-					self.log_file.write(json_s + '\n')
+					log_f.write(json_s + '\n')
 					self.upload_packet_to_gpaero(json_s)
 				except Exception as e:
 					print 'failed due to ', e, ' raw:\n', entry
