@@ -21,6 +21,8 @@ import json
 import tempfile
 import aprslib
 
+_DEBUG = True
+
 
 class APRSBase(object):
 	
@@ -35,14 +37,24 @@ class APRSBase(object):
 		self.reset(**kwargs)
 	
 	def reset(self, **kwargs):
+		# monitor will reassert thes, but just in case
+		self.start_time = 0
+		self.last_print = 0
+		
 		self.locations = []
 		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'))
+		print 'Logging to ', self.log_filename
 		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
-		self.start_time = time.time()
 	
 	def get_loc(self):
 		raise NotImplementedError
+	
+	def cleanup(self):
+		"""
+		any actions deemed prudent when stopping monitoring
+		"""
+		pass
 	
 	def monitor(self):
 		"""
@@ -51,8 +63,15 @@ class APRSBase(object):
 		reset when successful.
 		abort on ctrl-c
 		"""
+		
+		self.start_time = time.time()
+		self.last_print = self.start_time
 		while True:
-			print 'monitor dt = {:0.1f} sec'.format(time.time() - self.start_time)
+			now = time.time()
+			# usually i would employ nan, but i don't want to force numpy.
+			if now - self.last_print > getattr(self, 'print_monitor_every_x_seconds', 2**64 -1):
+				self.last_print = now
+				print 'monitor dt = {:0.1f} sec'.format(time.time() - self.start_time)
 			try:
 				self.get_loc()
 				self.send_locations()
@@ -61,6 +80,7 @@ class APRSBase(object):
 				self.wait_between_checks = self.default_wait_between_checks
 			except KeyboardInterrupt:
 				print 'stopping upon request'
+				self.cleanup()
 				break
 			except Exception as e:
 				print 'Problem monitoring due to {:}, increasing wait time by x2'.format(e)
@@ -97,14 +117,14 @@ class APRSBase(object):
 
 
 		"""
-		if True or self.verbose:
+		if (_DEBUG or self.verbose) and len(self.locations) > 0:
 			print 'sending {:0d} locations'.format(len(self.locations))
 		with open(self.log_filename, 'ab') as log_f:
 			for entry in self.locations:
 				try:
 					json_s = json.dumps({'Version' : 2.0,
 						'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
-									'timeStamp' : entry['time'],  # maybe status_lasttime, or lasttime - not sure what's better
+									'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
 									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
 						})
 					log_f.write(json_s + '\n')
@@ -132,27 +152,34 @@ class APRSIS2GP(APRSBase):
 		self.AIS = aprslib.IS(self.callsign)#, host='noam.aprs2.net', port=14580)
 		self.delay_before_check = kwargs.get('delay', 0.5)
 		
-	def filter_callsigns(self, packet):
+	def filter_callsigns(self, packet, packet_i = -1):
 		if self.verbose:
 			print 'raw packet : ', packet
 		if len(packet) == 0:
 			return
 		try:
 			ppac = aprslib.parse(packet)
+			if _DEBUG:
+				with open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'a') as f:
+					# termination chosen so that i can use the file for debugging 
+					f.write(packet+'\r\n')
 			if self.verbose:
 				print 'parsed :\n', ppac
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IEMI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
+				print 'Adding packet : ', ppac
 				self.locations.append({'srccall' : ppac['from'],
-							'long' : ppac['longitude'],
+							'lng' : ppac['longitude'],
 							'lat' : ppac['latitude'],
-							'altitude' : ppac['altitude'],
-							'timeStamp' : ppac['timestamp']})
+							'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
+							'time' : time.time()})  # note that packets don't have time stamps - aprs.fi adds them on the receiver side, so we have to do the same.
+				if _DEBUG:
+					print 'after adding\n', self.locations
 			elif self.verbose:
 				print 'from {:}, skip'.format(ppac['from'])
-		except Exception as e:
+		except Exception as e: #(aprslib.UnknownFormat, aprslib.ParseError:) as e:
 			if self.verbose:
-				print 'filter_callsigns failed to parse packet due to %s raw packet *%s*' % (e, packet)
+				print 'filter_callsigns - i = {:0d} failed due to %s raw packet *%s*' % (packet_i, e, packet)
 		
 	def get_loc(self):
 		self.AIS.connect()
@@ -183,6 +210,9 @@ class APRSIS2GPRAW(APRSIS2GP):
 		"""
 		self.addr = addr
 		self.port = port
+		self._buffer = ''
+		if _DEBUG:
+			self._total_N_packets = 0
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
 		
 	def prepare_connection(self, **kwargs):
@@ -197,24 +227,67 @@ class APRSIS2GPRAW(APRSIS2GP):
 		print 'ack : ', self.raw_socket.recv(10000).split('\r\n')[0]
 		self.raw_socket.setblocking(False)
 	
+	def cleanup(self, **kwargs):
+		self.close_connection()
+	
 	def close_connection(self):
 		print 'closing socket'
 		self.raw_socket.close()
 		
 	def get_loc(self):
 		try:
-			 data = self.raw_socket.recv(2**14).split('\r\n')
-			 for packet in data:
-				 self.filter_callsigns(packet)
+			pre_data = (self._buffer + self.raw_socket.recv(2**14)).split('\r\n')
+			# if last line is an exact packet, this wil shift its processing one cycle later; seems acceptable.
+			self._buffer = pre_data[-1]
+			data = pre_data[:-1]
+			if _DEBUG:
+				now = time.time()
+				self._total_N_packets += len(data)
+				if now - self.last_print > getattr(self, 'print_info_every_x_seconds', 1):
+					self.last_print = now
+					print 'dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
+			for packet_i, packet in enumerate(data):
+				self.filter_callsigns(packet, packet_i = packet_i)
+			if len(data) < 2: # 1?
+				print 'got too little data N = {:0d}, resetting socket'.format(len(data))
+				self.close_connection()
+				time.sleep(0.5)
+				self.prepare_connection()
 		except socket.error:
+			print 'Socket exception, resetting connection'
 			# we could try closing it, but i'm not sure there's much point - let GC handle that.
 			self.prepare_connection()
+			
+
+class APRSIS2GPRAWDEBUG(APRSIS2GPRAW):
+	"""
+	read data from a file in order to debug stuff.
+	file is one that was recorded in aprs2gpaero_all_packet.log
+	not meant to be too flexible.
+	"""
+	
+	class FakeSocket(object):
+		
+		def __init__(self):
+			self.f = open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'r')
+			
+		def close(self):
+			self.f.close()
+			
+		def recv(self, N, **kwargs):
+			return self.f.read(N)
+	
+	def prepare_connection(self, **kwargs):
+		self.raw_socket = self.FakeSocket()
+	
+	
 
 
 class APRSFI2GP(APRSBase):
 	"""
 	get data from aprs.fi, send to gpaero.
 	NOTE: very useful for initial coding and personal experimentation, but the legality of using the aprs.fi api beyond that has to be checked on a case by case basis.
+	However, i've ended up forcing other sources to the slightly odd dictionary keys e.g. lng ; too bad.
 	"""
 	
 	def __init__(self, ids_to_be_tracked, aprs_api_key, **kwargs):
