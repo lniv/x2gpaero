@@ -101,12 +101,16 @@ class APRSBase(object):
 				print 'Problem monitoring due to {:}, increasing wait time by x2'.format(e)
 				self.wait_between_checks *= 2
 	
-	def upload_packet_to_gpaero(self, json_s):
+	def upload_packet_to_gpaero(self, json_dict):
 		"""
 		not implemented yet; will do so later.
 		for now, just print it
 		"""
-		print 'would have uploaded ', json_s
+		print 'Uploading ', json_dict
+		# from BB's code - but i can't find documentation for this.
+		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
+		#r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
+		#r.raise_for_status()
 	
 	def send_locations(self):
 		"""
@@ -137,13 +141,13 @@ class APRSBase(object):
 		with open(self.log_filename, 'ab') as log_f:
 			for entry in self.locations:
 				try:
-					json_s = json.dumps({'Version' : 2.0,
+					json_dict = json.dumps({'Version' : 2.0,
 						'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
 									'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
 									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
 						})
-					log_f.write(json_s + '\n')
-					self.upload_packet_to_gpaero(json_s)
+					log_f.write(json.dumps(json_dict) + '\n')
+					self.upload_packet_to_gpaero(json_dict)
 				except Exception as e:
 					print 'failed due to ', e, ' raw:\n', entry
 		self.locations = []
@@ -296,8 +300,6 @@ class APRSIS2GPRAWDEBUG(APRSIS2GPRAW):
 	def prepare_connection(self, **kwargs):
 		self.raw_socket = self.FakeSocket()
 	
-	
-
 
 class APRSFI2GP(APRSBase):
 	"""
