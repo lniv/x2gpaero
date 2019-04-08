@@ -1,16 +1,16 @@
+#!/usr/bin/python
 """
 move aprs data onto glideport.aero
 
 starting from BB's (shell) code, and using that + aprs.fi api as guide.
 
 TODO:
-1 this should probably read a config file with the user callsigns : IEMI pairs, maybe other info (aprs.fi api keys, if we use that)
-2 not sure how often we can actually read data from aprs.fi - will need to talk to him(?) and see about rates etc (or go to ARPS-IS)
-3 add installation instructions - here or in a github md file
+1 if using aprs.fi (not default), not sure how often we can actually read data from aprs.fi - will need to talk to him(?) and see about rates etc (or go to ARPS-IS)
+2 add installation instructions - here or in a github md file
 
 NOTE: it's problematic having a canned example here, for two reasons:
 1. ultimately we will be pushing to a live website, which i don't want to contaminate.
-2. the real packets must have some not so public info - IEMI values.
+2. the real packets must have some not so public info - IMEI values.
 """
 
 import os
@@ -19,10 +19,22 @@ import socket
 import requests
 import json
 import tempfile
+import argparse
 import aprslib
 
 _DEBUG = True
 
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'delay']
+
+def config_file_reader(filename):
+	"""
+	read a simple config file
+	i'd prefer to keep to json, as we're using it for other things
+	"""
+	with open(filename, 'rb') as f:
+		config = json.load(f)
+	return config
+	
 
 class APRSBase(object):
 	
@@ -32,6 +44,9 @@ class APRSBase(object):
 		aprs_api_key : said key for a valid aprs.fi user id
 		"""
 		self.ids_to_be_tracked = ids_to_be_tracked
+		print 'Will track'
+		for aprs_id, IMEI in self.ids_to_be_tracked.items():
+			print '{:} : {:}'.format(aprs_id, IMEI) 
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.verbose = kwargs.get('verbose', False)
 		self.reset(**kwargs)
@@ -146,6 +161,7 @@ class APRSIS2GP(APRSBase):
 		"""
 		super(APRSIS2GP, self).__init__(ids_to_be_tracked, **kwargs)
 		self.callsign = callsign
+		print 'Using callsign ', callsign
 		self.prepare_connection(**kwargs)
 	
 	def prepare_connection(self, **kwargs):
@@ -165,7 +181,7 @@ class APRSIS2GP(APRSBase):
 					f.write(packet+'\r\n')
 			if self.verbose:
 				print 'parsed :\n', ppac
-			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IEMI values.
+			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
 				print 'Adding packet : ', ppac
 				self.locations.append({'srccall' : ppac['from'],
@@ -315,3 +331,25 @@ class APRSFI2GP(APRSBase):
 				self.locations.extend(res.json()['entries'])
 			except Exception as e:
 				print 'failed due to ', e
+				
+
+if __name__ == '__main__':
+	parser = argparse.ArgumentParser(description= '''
+send aprs location packets for specific users to gpaero
+command line execution uses local filtering from full APRS-IS feed
+other options available in module.
+''', formatter_class= argparse.RawTextHelpFormatter)
+	parser.add_argument('config', type = str, default = '',
+			help= '''
+json config file - must have 
+callsign - string
+ids - a dictionary of 'from' aprs packet : IMEI identifiers
+optional {:}'''.format(_USABLE_KEYWORDS))
+	args = parser.parse_args()
+	
+	config = config_file_reader(args.config)
+	ids_to_be_tracked = config.pop('ids')
+	callsign = config.pop('callsign')
+	
+	c = APRSIS2GPRAW(ids_to_be_tracked, callsign, **config)
+	c.monitor()
