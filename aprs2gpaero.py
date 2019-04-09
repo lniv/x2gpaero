@@ -22,7 +22,7 @@ import tempfile
 import argparse
 import aprslib
 
-_DEBUG = True
+_DEBUG = False
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
 
@@ -141,7 +141,7 @@ class APRSBase(object):
 
 
 		"""
-		if (_DEBUG or self.verbose) and len(self.locations) > 0:
+		if _DEBUG or self.verbose or len(self.locations) > 0:
 			print 'sending {:0d} locations'.format(len(self.locations))
 		with open(self.log_filename, 'ab') as log_f:
 			for entry in self.locations:
@@ -198,7 +198,7 @@ class APRSIS2GP(APRSBase):
 							'lat' : ppac['latitude'],
 							'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
 							'time' : time.time()})  # note that packets don't have time stamps - aprs.fi adds them on the receiver side, so we have to do the same.
-				if _DEBUG:
+				if _DEBUG or self.verbose:
 					print 'after adding\n', self.locations
 			elif self.verbose:
 				print 'from {:}, skip'.format(ppac['from'])
@@ -237,8 +237,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.port = port
 		self._buffer = ''
 		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
-		if _DEBUG:
-			self._total_N_packets = 0
+		self._total_N_packets = 0
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
 		
 	def prepare_connection(self, **kwargs):
@@ -266,12 +265,11 @@ class APRSIS2GPRAW(APRSIS2GP):
 			# if last line is an exact packet, this wil shift its processing one cycle later; seems acceptable.
 			self._buffer = pre_data[-1]
 			data = pre_data[:-1]
-			if _DEBUG:
-				now = time.time()
-				self._total_N_packets += len(data)
-				if now - self.last_print > self.print_info_every_x_seconds:
-					self.last_print = now
-					print 'dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
+			now = time.time()
+			self._total_N_packets += len(data)
+			if now - self.last_print > self.print_info_every_x_seconds:
+				self.last_print = now
+				print 'dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
 			for packet_i, packet in enumerate(data):
 				self.filter_callsigns(packet, packet_i = packet_i)
 			if len(data) < 2: # 1?
