@@ -1,5 +1,5 @@
 # aprs2gpaero
-push packets from aprs to gliderport.aero
+push packets from aprs to glideport.aero
 
 minimal usage in a shell
 
