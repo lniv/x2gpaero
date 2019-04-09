@@ -24,7 +24,7 @@ import aprslib
 
 _DEBUG = True
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'delay']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss']
 
 def config_file_reader(filename):
 	"""
@@ -41,7 +41,6 @@ class APRSBase(object):
 	def __init__(self, ids_to_be_tracked, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
-		aprs_api_key : said key for a valid aprs.fi user id
 		"""
 		self.ids_to_be_tracked = ids_to_be_tracked
 		print 'Will track'
@@ -103,14 +102,17 @@ class APRSBase(object):
 	
 	def upload_packet_to_gpaero(self, json_dict):
 		"""
-		not implemented yet; will do so later.
-		for now, just print it
+		Uses the push method
+		there are other methods meant for higher frequency fixes - GlideTrak protocol.
+		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
 		"""
 		print 'Uploading ', json_dict
-		# from BB's code - but i can't find documentation for this.
+		# from BB's code
 		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
-		#r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
-		#r.raise_for_status()
+		# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
+		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
+		r.raise_for_status()
+		print 'Received ', r.text
 	
 	def send_locations(self):
 		"""
@@ -141,11 +143,11 @@ class APRSBase(object):
 		with open(self.log_filename, 'ab') as log_f:
 			for entry in self.locations:
 				try:
-					json_dict = json.dumps({'Version' : 2.0,
+					json_dict = {'Version' : 2.0,
 						'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
 									'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
 									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
-						})
+						}
 					log_f.write(json.dumps(json_dict) + '\n')
 					self.upload_packet_to_gpaero(json_dict)
 				except Exception as e:
@@ -231,6 +233,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.addr = addr
 		self.port = port
 		self._buffer = ''
+		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
 		if _DEBUG:
 			self._total_N_packets = 0
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
@@ -245,7 +248,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		time.sleep(0.1)
 		self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
 		print 'ack : ', self.raw_socket.recv(10000).split('\r\n')[0]
-		self.raw_socket.setblocking(False)
+		self.raw_socket.settimeout(self.wait_between_checks * 2)  # fudge factor.
 	
 	def cleanup(self, **kwargs):
 		self.close_connection()
@@ -269,12 +272,18 @@ class APRSIS2GPRAW(APRSIS2GP):
 			for packet_i, packet in enumerate(data):
 				self.filter_callsigns(packet, packet_i = packet_i)
 			if len(data) < 2: # 1?
-				print 'got too little data N = {:0d}, resetting socket'.format(len(data))
-				self.close_connection()
-				time.sleep(0.5)
-				self.prepare_connection()
-		except socket.error:
-			print 'Socket exception, resetting connection'
+				self.data_loss_counter += 1
+				print 'Got no data for last {:0d} cycles'.format(self.data_loss_counter)
+				if self.data_loss_counter >= self.max_consecutive_data_loss:
+					print 'got too little data for too many consecutive cycles (> {:0d}), resetting socket'.format(self.max_consecutive_data_loss)
+					self.close_connection()
+					time.sleep(1.0)
+					self.prepare_connection()
+			else:
+				self.data_loss_counter = 0
+				
+		except socket.error as e:
+			print 'Socket exception %s, resetting connection' %e
 			# we could try closing it, but i'm not sure there's much point - let GC handle that.
 			self.prepare_connection()
 			
@@ -305,7 +314,7 @@ class APRSFI2GP(APRSBase):
 	"""
 	get data from aprs.fi, send to gpaero.
 	NOTE: very useful for initial coding and personal experimentation, but the legality of using the aprs.fi api beyond that has to be checked on a case by case basis.
-	However, i've ended up forcing other sources to the slightly odd dictionary keys e.g. lng ; too bad.
+	However, i've ended up forcing other sources to the slightly odd dictionary keys e.g. lng that its API uses; too bad.
 	"""
 	
 	def __init__(self, ids_to_be_tracked, aprs_api_key, **kwargs):
