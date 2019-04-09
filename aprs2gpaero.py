@@ -24,7 +24,7 @@ import aprslib
 
 _DEBUG = True
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
 
 def config_file_reader(filename):
 	"""
@@ -42,12 +42,15 @@ class APRSBase(object):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		"""
+		print 'kwargs = ', kwargs
 		self.ids_to_be_tracked = ids_to_be_tracked
 		print 'Will track'
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
 			print '{:} : {:}'.format(aprs_id, IMEI) 
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.verbose = kwargs.get('verbose', False)
+		self.print_info_every_x_seconds = kwargs.get('print_info_every_x_seconds', 1.0)
+		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
 		self.reset(**kwargs)
 	
 	def reset(self, **kwargs):
@@ -83,7 +86,7 @@ class APRSBase(object):
 		while True:
 			now = time.time()
 			# usually i would employ nan, but i don't want to force numpy.
-			if now - self.last_print > getattr(self, 'print_monitor_every_x_seconds', 2**64 -1):
+			if now - self.last_print > self.print_monitor_every_x_seconds:
 				self.last_print = now
 				print 'monitor dt = {:0.1f} sec'.format(time.time() - self.start_time)
 			try:
@@ -248,7 +251,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		time.sleep(0.1)
 		self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
 		print 'ack : ', self.raw_socket.recv(10000).split('\r\n')[0]
-		self.raw_socket.settimeout(self.wait_between_checks * 2)  # fudge factor.
+		self.raw_socket.settimeout(kwargs.get('socket_timeout', self.wait_between_checks * 2))  # fudge factor.
 	
 	def cleanup(self, **kwargs):
 		self.close_connection()
@@ -266,7 +269,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 			if _DEBUG:
 				now = time.time()
 				self._total_N_packets += len(data)
-				if now - self.last_print > getattr(self, 'print_info_every_x_seconds', 1):
+				if now - self.last_print > self.print_info_every_x_seconds:
 					self.last_print = now
 					print 'dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
 			for packet_i, packet in enumerate(data):
