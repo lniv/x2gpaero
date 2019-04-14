@@ -6,7 +6,7 @@ starting from BB's (shell) code, and using that + aprs.fi api as guide.
 
 TODO:
 1 if using aprs.fi (not default), not sure how often we can actually read data from aprs.fi - will need to talk to him(?) and see about rates etc (or go to ARPS-IS)
-2 add installation instructions - here or in a github md file
+2. match the callsign, with or without dashes? not clear that it's worth it; ultimately one should know what he's transmitting.
 
 NOTE: it's problematic having a canned example here, for two reasons:
 1. ultimately we will be pushing to a live website, which i don't want to contaminate.
@@ -15,6 +15,7 @@ NOTE: it's problematic having a canned example here, for two reasons:
 
 import os
 import time
+import logging
 import socket
 import requests
 import json
@@ -25,6 +26,7 @@ import aprslib
 _DEBUG = False
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
+
 
 def config_file_reader(filename):
 	"""
@@ -42,16 +44,16 @@ class APRSBase(object):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		"""
-		print 'kwargs = ', kwargs
 		self.ids_to_be_tracked = ids_to_be_tracked
-		print 'Will track'
-		for aprs_id, IMEI in self.ids_to_be_tracked.items():
-			print '{:} : {:}'.format(aprs_id, IMEI) 
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.verbose = kwargs.get('verbose', False)
 		self.print_info_every_x_seconds = kwargs.get('print_info_every_x_seconds', 1.0)
 		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
 		self.reset(**kwargs)
+		logging.info('kwargs = {:}'.format(kwargs))
+		for aprs_id, IMEI in self.ids_to_be_tracked.items():
+			logging.info('Tracking {:} : {:}'.format(aprs_id, IMEI))
+		
 	
 	def reset(self, **kwargs):
 		# monitor will reassert thes, but just in case
@@ -60,7 +62,13 @@ class APRSBase(object):
 		
 		self.locations = []
 		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'))
-		print 'Logging to ', self.log_filename
+		logging.basicConfig(filename= self.log_filename,
+							level= logging.DEBUG if _DEBUG else logging.INFO,
+							format='%(asctime)s %(levelname)-8s %(message)s',
+							datefmt='%Y_%m_%d_%H_%M_%S')
+		logging.getLogger().addHandler(logging.StreamHandler())
+		logging.info('Logging to ' + self.log_filename)
+		
 		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
 	
@@ -88,20 +96,22 @@ class APRSBase(object):
 			# usually i would employ nan, but i don't want to force numpy.
 			if now - self.last_print > self.print_monitor_every_x_seconds:
 				self.last_print = now
-				print 'monitor dt = {:0.1f} sec'.format(time.time() - self.start_time)
+				logging.info('monitor dt = {:0.1f} sec'.format(time.time() - self.start_time))
 			try:
+				
 				self.get_loc()
 				self.send_locations()
 				time.sleep(self.wait_between_checks)
 				# reset wait if successful.
 				self.wait_between_checks = self.default_wait_between_checks
 			except KeyboardInterrupt:
-				print 'stopping upon request'
+				logging.info('stopping upon request')
+				logging.info('Logged to ' + self.log_filename)
 				self.cleanup()
 				break
 			except Exception as e:
-				print 'Problem monitoring due to {:}, increasing wait time by x2'.format(e)
 				self.wait_between_checks *= 2
+				logging.warning('Problem monitoring due to {:}, increasing wait time by x2 to {:0.1f} sec'.format(e, self.wait_between_checks))
 	
 	def upload_packet_to_gpaero(self, json_dict):
 		"""
@@ -109,13 +119,14 @@ class APRSBase(object):
 		there are other methods meant for higher frequency fixes - GlideTrak protocol.
 		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
 		"""
-		print 'Uploading ', json_dict
+		logging.info('Uploading {:}'.format(json_dict))
 		# from BB's code
 		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
 		# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
+		
 		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
 		r.raise_for_status()
-		print 'Received ', r.text
+		logging.info('Received {:}'.format(r.text))
 	
 	def send_locations(self):
 		"""
@@ -141,20 +152,19 @@ class APRSBase(object):
 
 
 		"""
-		if _DEBUG or self.verbose or len(self.locations) > 0:
-			print 'sending {:0d} locations'.format(len(self.locations))
-		with open(self.log_filename, 'ab') as log_f:
-			for entry in self.locations:
-				try:
-					json_dict = {'Version' : 2.0,
-						'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
-									'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
-									'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
-						}
-					log_f.write(json.dumps(json_dict) + '\n')
-					self.upload_packet_to_gpaero(json_dict)
-				except Exception as e:
-					print 'failed due to ', e, ' raw:\n', entry
+		if (_DEBUG or self.verbose) and len(self.locations) > 0:
+			logging.debug('sending {:0d} locations'.format(len(self.locations)))
+		
+		for entry in self.locations:
+			try:
+				json_dict = {'Version' : 2.0,
+					'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
+								'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
+								'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
+					}
+				self.upload_packet_to_gpaero(json_dict)
+			except Exception as e:
+				logging.warning('failed due to {:} raw : {:}'.format(e, entry))
 		self.locations = []
 		
 
@@ -170,7 +180,7 @@ class APRSIS2GP(APRSBase):
 		"""
 		super(APRSIS2GP, self).__init__(ids_to_be_tracked, **kwargs)
 		self.callsign = callsign
-		print 'Using callsign ', callsign
+		logging.info('Using callsign ' +  self.callsign)
 		self.prepare_connection(**kwargs)
 	
 	def prepare_connection(self, **kwargs):
@@ -192,7 +202,7 @@ class APRSIS2GP(APRSBase):
 				print 'parsed :\n', ppac
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
-				print 'Adding packet : ', ppac
+				logging.info('Adding packet : {:}'.format(ppac))
 				self.locations.append({'srccall' : ppac['from'],
 							'lng' : ppac['longitude'],
 							'lat' : ppac['latitude'],
@@ -203,18 +213,17 @@ class APRSIS2GP(APRSBase):
 			elif self.verbose:
 				print 'from {:}, skip'.format(ppac['from'])
 		except Exception as e: #(aprslib.UnknownFormat, aprslib.ParseError:) as e:
-			if self.verbose:
-				print 'filter_callsigns - i = {:0d} failed due to %s raw packet *%s*' % (packet_i, e, packet)
+			logging.debug('filter_callsigns - i = {:0d} failed due to {:} raw packet *{:}*'.format(packet_i, e, packet))
 		
 	def get_loc(self):
 		self.AIS.connect()
 		# necessary
 		time.sleep(self.delay_before_check)
-		print 'connected'
+		logging.debug('connected')
 		self.AIS.consumer(self.filter_callsigns, raw=True, blocking=False)
-		print 'found\n', self.locations
+		logging.info('found\n{:}'.format(self.locations))
 		self.AIS.close()
-		print 'closed'
+		logging.debug('closed')
 		
 
 class APRSIS2GPRAW(APRSIS2GP):
@@ -238,6 +247,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self._buffer = ''
 		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
 		self._total_N_packets = 0
+		self.data_loss_counter = 0
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
 		
 	def prepare_connection(self, **kwargs):
@@ -246,10 +256,10 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.raw_socket.setblocking(True)
 		self.raw_socket.settimeout(2)
 		time.sleep(0.1)
-		print 'server greeting : ', self.raw_socket.recv(10000)
+		logging.info('server greeting : ' +  self.raw_socket.recv(10000))
 		time.sleep(0.1)
 		self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
-		print 'ack : ', self.raw_socket.recv(10000).split('\r\n')[0]
+		logging.info('ack : ' +  self.raw_socket.recv(10000).split('\r\n')[0])
 		self.raw_socket.settimeout(kwargs.get('socket_timeout', self.wait_between_checks * 2))  # fudge factor.
 	
 	def cleanup(self, **kwargs):
@@ -269,22 +279,22 @@ class APRSIS2GPRAW(APRSIS2GP):
 			self._total_N_packets += len(data)
 			if now - self.last_print > self.print_info_every_x_seconds:
 				self.last_print = now
-				print 'dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
+				# TODO drop the dt?
+				logging.info('dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time)))
 			for packet_i, packet in enumerate(data):
 				self.filter_callsigns(packet, packet_i = packet_i)
 			if len(data) < 2: # 1?
 				self.data_loss_counter += 1
-				print 'Got no data for last {:0d} cycles'.format(self.data_loss_counter)
+				logging.warning('Got no data for last {:0d} cycles'.format(self.data_loss_counter))
 				if self.data_loss_counter >= self.max_consecutive_data_loss:
-					print 'got too little data for too many consecutive cycles (> {:0d}), resetting socket'.format(self.max_consecutive_data_loss)
+					logging.error('got too little data for too many consecutive cycles (> {:0d}), resetting socket'.format(self.max_consecutive_data_loss))
 					self.close_connection()
 					time.sleep(1.0)
 					self.prepare_connection()
 			else:
 				self.data_loss_counter = 0
-				
 		except socket.error as e:
-			print 'Socket exception %s, resetting connection' %e
+			logging.error('Socket exception {:}, resetting connection'.format(e))
 			# we could try closing it, but i'm not sure there's much point - let GC handle that.
 			self.prepare_connection()
 			
@@ -335,11 +345,11 @@ class APRSFI2GP(APRSBase):
 		for group_i in range(self.N_id_groups):
 			try:
 				callsign_group = ','.join(self.ids_to_be_tracked.keys()[group_i : group_i + 20])
-				print callsign_group
+				logging.debug(callsign_group)
 				res = requests.get('https://api.aprs.fi/api/get?name={:}&what=loc&apikey={:}&format=json'.format(callsign_group, self.aprs_api_key))
-				print res.url
+				logging.debug(res.url)
 				res.raise_for_status()
-				print 'got\n', res.json()
+				logging.debug('got\n' +  res.json())
 				self.locations.extend(res.json()['entries'])
 			except Exception as e:
 				print 'failed due to ', e
