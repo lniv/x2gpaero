@@ -20,13 +20,14 @@ import socket
 import requests
 import json
 import tempfile
+from collections import deque
 import argparse
 import aprslib
 
 _DEBUG = False
+_LOG_ALL = False
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
-
 
 def config_file_reader(filename):
 	"""
@@ -49,6 +50,7 @@ class APRSBase(object):
 		self.verbose = kwargs.get('verbose', False)
 		self.print_info_every_x_seconds = kwargs.get('print_info_every_x_seconds', 1.0)
 		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
+		self.max_wait_between_checks = kwargs.get('max_wait_between_checks', 1800.0)
 		self.reset(**kwargs)
 		logging.info('kwargs = {:}'.format(kwargs))
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
@@ -71,15 +73,20 @@ class APRSBase(object):
 		
 		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
+		self.recent_packets = {k : deque([], maxlen = kwargs.get('N_last_packets', 5)) for k in self.ids_to_be_tracked}
+		# accept new packet only after min_packet_dt seconds since last valid one.
+		self.min_packet_dt = kwargs.get('min_packet_dt', 10.0)
+		self.last_packet_time = {k : 0.0 for k in self.ids_to_be_tracked}
+		self.packet_stats = {k : {'good' : 0, 'rate_limit' : 0, 'duplicate' : 0} for k in self.ids_to_be_tracked}
 	
 	def get_loc(self):
 		raise NotImplementedError
 	
-	def cleanup(self):
+	def cleanup(self, **kwargs):
 		"""
 		any actions deemed prudent when stopping monitoring
 		"""
-		pass
+		logging.info('packet stats : %s' % self.packet_stats)
 	
 	def monitor(self):
 		"""
@@ -110,8 +117,13 @@ class APRSBase(object):
 				self.cleanup()
 				break
 			except Exception as e:
-				self.wait_between_checks *= 2
-				logging.warning('Problem monitoring due to {:}, increasing wait time by x2 to {:0.1f} sec'.format(e, self.wait_between_checks))
+				if self.wait_between_checks > self.max_wait_between_checks:
+					# NOTE: might be better to terminate here, and e.g. let a cron job restart us?
+					self.wait_between_checks = self.max_wait_between_checks
+					logging.warning('Problem monitoring due to {:}, wait time capped at {:} sec'.format(e, self.max_wait_between_checks))
+				else:
+					self.wait_between_checks *= 2
+					logging.warning('Problem monitoring due to {:}, increasing wait time by x2 to {:0.1f} sec'.format(e, self.wait_between_checks))
 	
 	def upload_packet_to_gpaero(self, json_dict):
 		"""
@@ -164,7 +176,7 @@ class APRSBase(object):
 					}
 				self.upload_packet_to_gpaero(json_dict)
 			except Exception as e:
-				logging.warning('failed due to {:} raw : {:}'.format(e, entry))
+				logging.warning('send_locations failed due to {:} raw : {:}'.format(e, entry))
 		self.locations = []
 		
 
@@ -194,7 +206,7 @@ class APRSIS2GP(APRSBase):
 			return
 		try:
 			ppac = aprslib.parse(packet)
-			if _DEBUG:
+			if _DEBUG or _LOG_ALL:
 				with open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'a') as f:
 					# termination chosen so that i can use the file for debugging 
 					f.write(packet+'\r\n')
@@ -202,14 +214,36 @@ class APRSIS2GP(APRSBase):
 				print 'parsed :\n', ppac
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
-				logging.info('Adding packet : {:}'.format(ppac))
-				self.locations.append({'srccall' : ppac['from'],
-							'lng' : ppac['longitude'],
-							'lat' : ppac['latitude'],
-							'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
-							'time' : time.time()})  # note that packets don't have time stamps - aprs.fi adds them on the receiver side, so we have to do the same.
-				if _DEBUG or self.verbose:
-					print 'after adding\n', self.locations
+				# we should drop duplicate packets, or those that are too frequent to be real.
+				# ideally, the packets should have a time stamp; tinytrak has this, and likely others, but it's optional.
+				# check if we've seen this packet recently, and if so, drop it
+				# however, we can't look at the raw packet, since we could have gotten it from a different source, which is what we're trying to deduplicate.
+				# i can't gaurantee that we had an independent time stamp, so we'll just use the location information;
+				# this of couse is not guaranteed unitque, but i'm willing to accept the potential loss if one of the last few packets match exactly.
+				short_packet_data = '{:} {:} {:}'.format(ppac['longitude'], ppac['latitude'], ppac.get('altitude', 0))
+				# get timestamp from packet, if included - not common.
+				timestamp = ppac.get('timestamp', time.time())
+				if short_packet_data in self.recent_packets.get(ppac['from'], []):
+					self.packet_stats[ppac['from']]['duplicate'] += 1
+					logging.warning('Dropping duplicate of recent packet - %s' % packet)
+				elif timestamp - self.last_packet_time.get(ppac['from'], 0) < self.min_packet_dt:
+					logging.warning('Got new packet too soon - %0.1f sec after last one, < %0.1f sec : %s' % (timestamp - self.last_packet_time.get(ppac['from'], 0), self.min_packet_dt, packet))
+					self.packet_stats[ppac['from']]['rate_limit'] += 1
+				else:
+					self.packet_stats[ppac['from']]['good'] += 1
+					# only count valid packet for rate limiting.
+					self.last_packet_time[ppac['from']] = timestamp
+					logging.info('Adding packet : {:}'.format(ppac))
+					self.locations.append({'srccall' : ppac['from'],
+								'lng' : ppac['longitude'],
+								'lat' : ppac['latitude'],
+								'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
+								'time' : timestamp}) 
+					if _DEBUG or self.verbose:
+						print 'after adding\n', self.locations
+				# adding this packet to the recent ones held for the id, regardless of validity
+				self.recent_packets[ppac['from']].append(short_packet_data)
+				
 			elif self.verbose:
 				print 'from {:}, skip'.format(ppac['from'])
 		except Exception as e: #(aprslib.UnknownFormat, aprslib.ParseError:) as e:
@@ -263,6 +297,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.raw_socket.settimeout(kwargs.get('socket_timeout', self.wait_between_checks * 2))  # fudge factor.
 	
 	def cleanup(self, **kwargs):
+		super(APRSIS2GPRAW, self).cleanup(**kwargs)
 		self.close_connection()
 	
 	def close_connection(self):
@@ -352,7 +387,7 @@ class APRSFI2GP(APRSBase):
 				logging.debug('got\n' +  res.json())
 				self.locations.extend(res.json()['entries'])
 			except Exception as e:
-				print 'failed due to ', e
+				print 'get_loc - failed due to ', e
 				
 
 if __name__ == '__main__':
