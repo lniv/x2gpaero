@@ -23,3 +23,5 @@ The config file is a json file (see [sample_config_structure.json](./sample_conf
 * print_info_every_x_seconds -  default to 1 sec.
 * print_monitor_every_x_seconds  - defults to effectively off.
 
+## P.S.
+I've put some utils and notes about setting up a raspi with the code in  [./utils](./utils)
