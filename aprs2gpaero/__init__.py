@@ -201,7 +201,7 @@ class APRSIS2GP(APRSBase):
 		
 	def filter_callsigns(self, packet, packet_i = -1):
 		if self.verbose:
-			print 'raw packet : ', packet
+			print('raw packet : ', packet)
 		if len(packet) == 0:
 			return
 		try:
@@ -390,7 +390,7 @@ class APRSFI2GP(APRSBase):
 				print 'get_loc - failed due to ', e
 				
 
-if __name__ == '__main__':
+def main():
 	parser = argparse.ArgumentParser(description= '''
 send aprs location packets for specific users to gpaero
 command line execution uses local filtering from full APRS-IS feed
@@ -410,3 +410,7 @@ optional {:}'''.format(_USABLE_KEYWORDS))
 	
 	c = APRSIS2GPRAW(ids_to_be_tracked, callsign, **config)
 	c.monitor()
+
+
+if __name__ == '__main__':
+    main()
