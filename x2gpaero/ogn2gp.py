@@ -28,7 +28,7 @@ class OGN2GPAero(APRSIS2GPRAW):
 
 
 def main():
-		parser = argparse.ArgumentParser(description= '''
+	parser = argparse.ArgumentParser(description= '''
 send OGN location packets for specific users to gpaero
 ''', formatter_class= argparse.RawTextHelpFormatter)
 	parser.add_argument('config', type = str, default = '',
