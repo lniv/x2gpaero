@@ -19,7 +19,7 @@ class OGN2GPAero(APRSIS2GPRAW):
 	however, this is direclty working for the aprs case, so it makes the easiest starting point.
 	"""
 
-	sock_block_len = 2**18
+	sock_block_len = 2**14
 	
 	def packet_parser(self, packet):
 		"""

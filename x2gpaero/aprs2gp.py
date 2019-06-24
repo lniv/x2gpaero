@@ -30,7 +30,7 @@ _DEBUG = False
 _LOG_ALL = False
 _UPLOAD = True
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
 
 def config_file_reader(filename):
 	"""
