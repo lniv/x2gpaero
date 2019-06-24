@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 """
 move aprs data onto glideport.aero
 
@@ -12,6 +12,8 @@ NOTE: it's problematic having a canned example here, for two reasons:
 1. ultimately we will be pushing to a live website, which i don't want to contaminate.
 2. the real packets must have some not so public info - IMEI values.
 """
+
+from __future__ import print_function
 
 import os
 import time
@@ -184,6 +186,8 @@ class APRSIS2GP(APRSBase):
 	"""
 	get the aprs packets directly from aprs-is
 	"""
+
+	packet_parser = aprslib.parse
 	
 	def __init__(self, ids_to_be_tracked, callsign, **kwargs):
 		"""
@@ -201,17 +205,17 @@ class APRSIS2GP(APRSBase):
 		
 	def filter_callsigns(self, packet, packet_i = -1):
 		if self.verbose:
-			print('raw packet : ', packet)
+			logging.debug('raw packet : %s' % packet)
 		if len(packet) == 0:
 			return
 		try:
-			ppac = aprslib.parse(packet)
+			ppac = self.packet_parser(packet)
 			if _DEBUG or _LOG_ALL:
 				with open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'a') as f:
 					# termination chosen so that i can use the file for debugging 
 					f.write(packet+'\r\n')
 			if self.verbose:
-				print 'parsed :\n', ppac
+				logging.debug('parsed :\n%s' % ppac)
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
 				# we should drop duplicate packets, or those that are too frequent to be real.
@@ -240,12 +244,13 @@ class APRSIS2GP(APRSBase):
 								'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
 								'time' : timestamp}) 
 					if _DEBUG or self.verbose:
-						print 'after adding\n', self.locations
+						logging.debug('after adding\n%s' % self.locations)
 				# adding this packet to the recent ones held for the id, regardless of validity
 				self.recent_packets[ppac['from']].append(short_packet_data)
 				
 			elif self.verbose:
-				print 'from {:}, skip'.format(ppac['from'])
+				logging.debug('from %s, skip' %ppac['from'])
+		# we may want to define an explicit list of exceptions, so e.g. the ogn child can have a different one.
 		except Exception as e: #(aprslib.UnknownFormat, aprslib.ParseError:) as e:
 			logging.debug('filter_callsigns - i = {:0d} failed due to {:} raw packet *{:}*'.format(packet_i, e, packet))
 		
@@ -290,10 +295,12 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.raw_socket.setblocking(True)
 		self.raw_socket.settimeout(2)
 		time.sleep(0.1)
-		logging.info('server greeting : ' +  self.raw_socket.recv(10000))
+		logging.info('server greeting : *{:}*'.format(self.raw_socket.recv(10000).decode('utf-8')))
 		time.sleep(0.1)
-		self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
-		logging.info('ack : ' +  self.raw_socket.recv(10000).split('\r\n')[0])
+		# casualty of 2 to 3 conversion; this is no longer ok (whether it ever was a good idea is another question)
+		#self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
+		self.raw_socket.sendall(bytearray('user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version),encoding="utf-8", errors="strict"))
+		logging.info('ack : *{:}*'.format(self.raw_socket.recv(10000).decode('utf-8').split('\r\n')[0]))
 		self.raw_socket.settimeout(kwargs.get('socket_timeout', self.wait_between_checks * 2))  # fudge factor.
 	
 	def cleanup(self, **kwargs):
@@ -301,12 +308,13 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.close_connection()
 	
 	def close_connection(self):
-		print 'closing socket'
+		logging.info('closing socket')
 		self.raw_socket.close()
 		
 	def get_loc(self):
 		try:
-			pre_data = (self._buffer + self.raw_socket.recv(2**14)).split('\r\n')
+			# we're going to drop stuff with non utf-8 chars later, but we shouldn't drop other legit packets.
+			pre_data = (self._buffer + self.raw_socket.recv(2**14).decode('utf-8', errors = 'ignore')).split('\r\n')
 			# if last line is an exact packet, this wil shift its processing one cycle later; seems acceptable.
 			self._buffer = pre_data[-1]
 			data = pre_data[:-1]
@@ -384,11 +392,11 @@ class APRSFI2GP(APRSBase):
 				res = requests.get('https://api.aprs.fi/api/get?name={:}&what=loc&apikey={:}&format=json'.format(callsign_group, self.aprs_api_key))
 				logging.debug(res.url)
 				res.raise_for_status()
-				logging.debug('got\n' +  res.json())
+				logging.debug('got\n*%s*' % res.json())
 				self.locations.extend(res.json()['entries'])
 			except Exception as e:
-				print 'get_loc - failed due to ', e
-				
+				logging.debug('get_loc - failed due to %s' % e)
+
 
 def main():
 	parser = argparse.ArgumentParser(description= '''
@@ -411,6 +419,5 @@ optional {:}'''.format(_USABLE_KEYWORDS))
 	c = APRSIS2GPRAW(ids_to_be_tracked, callsign, **config)
 	c.monitor()
 
-
 if __name__ == '__main__':
-    main()
+	main()

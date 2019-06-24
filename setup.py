@@ -2,11 +2,12 @@ from setuptools import setup
 
 setup(
     name='aprs2gpaero',
-    description='Gateway for APRS traffic to glideport.aero',
+    description='Gateway for APRS/OGN traffic to glideport.aero',
     version='0.0.2',
     setup_requires=[],
     install_requires=[
         'aprslib',
+        'ogn-client',
         'requests',
     ],
     include_package_data=True,
@@ -14,7 +15,8 @@ setup(
     data_files=['LICENSE'],
     entry_points={
         'console_scripts': [
-            'aprs2gpaero= aprs2gpaero:main',
+            'aprs2gpaero= x2gpaero.aprs:main',
+            'ogn2gpaero= x2gpaero.ogn:main'
         ]
     },
     classifiers=[

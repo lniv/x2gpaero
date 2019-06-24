@@ -1,5 +1,6 @@
 # aprs2gpaero
 push packets from aprs to glideport.aero
+a child module for ogn traffic is included as well, but does not work yet, so the instructions below are specific to aprs traffic.
 
 Note that glideport.aero currently displays different trackers for a single pilot as different tracks, and does not attempt to consolidate them.
 
