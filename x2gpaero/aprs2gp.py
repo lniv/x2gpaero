@@ -28,6 +28,7 @@ import aprslib
 
 _DEBUG = False
 _LOG_ALL = False
+_UPLOAD = True
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds']
 
@@ -133,6 +134,9 @@ class APRSBase(object):
 		there are other methods meant for higher frequency fixes - GlideTrak protocol.
 		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
 		"""
+		if not _UPLOAD:
+			logging.info('would upload, but skipping {:}'.format(json_dict))
+			return
 		
 		logging.info('Uploading {:}'.format(json_dict))
 		# from BB's code
@@ -188,7 +192,11 @@ class APRSIS2GP(APRSBase):
 	get the aprs packets directly from aprs-is
 	"""
 
-	packet_parser = aprslib.parse
+	def packet_parser(self, packet):
+		"""
+		minimal wrapper in this case, but expect to be overwritten for e.g. ogn parsing
+		"""
+		return aprslib.parse(packet)
 	
 	def __init__(self, ids_to_be_tracked, callsign, **kwargs):
 		"""
@@ -211,6 +219,8 @@ class APRSIS2GP(APRSBase):
 			return
 		try:
 			ppac = self.packet_parser(packet)
+			if ppac is None:
+				return
 			if _DEBUG or _LOG_ALL:
 				with open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'a') as f:
 					# termination chosen so that i can use the file for debugging 
@@ -276,6 +286,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 	"""
 	
 	version = 0.01
+	sock_block_len = 2**14
 	
 	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, **kwargs):
 		"""
@@ -289,6 +300,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self._total_N_packets = 0
 		self.data_loss_counter = 0
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
+		logging.info('Connecting to {:}:{:}'.format(self.addr, self.port))
 		
 	def prepare_connection(self, **kwargs):
 		self.raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -315,7 +327,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 	def get_loc(self):
 		try:
 			# we're going to drop stuff with non utf-8 chars later, but we shouldn't drop other legit packets.
-			pre_data = (self._buffer + self.raw_socket.recv(2**14).decode('utf-8', errors = 'ignore')).split('\r\n')
+			pre_data = (self._buffer + self.raw_socket.recv(self.sock_block_len).decode('utf-8', errors = 'ignore')).split('\r\n')
 			# if last line is an exact packet, this wil shift its processing one cycle later; seems acceptable.
 			self._buffer = pre_data[-1]
 			data = pre_data[:-1]

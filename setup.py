@@ -15,8 +15,8 @@ setup(
     data_files=['LICENSE'],
     entry_points={
         'console_scripts': [
-            'aprs2gpaero= x2gpaero.aprs:main',
-            'ogn2gpaero= x2gpaero.ogn:main'
+            'aprs2gpaero = x2gpaero.aprs2gp:main',
+            'ogn2gpaero = x2gpaero.ogn2gp:main'
         ]
     },
     classifiers=[
