@@ -41,7 +41,7 @@ optional {:}'''.format(_USABLE_KEYWORDS))
 	args = parser.parse_args()
 	config = config_file_reader(args.config)
 	ids_to_be_tracked = config.pop('ids')
-	c = OGN2GPAero(ids_to_be_tracked, callsign, **config)
+	c = OGN2GPAero(ids_to_be_tracked, **config)
 	c.monitor()
 
 if __name__ == '__main__':
