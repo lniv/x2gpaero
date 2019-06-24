@@ -36,7 +36,7 @@ def config_file_reader(filename):
 	read a simple config file
 	i'd prefer to keep to json, as we're using it for other things
 	"""
-	with open(filename, 'rb') as f:
+	with open(filename, 'r') as f:
 		config = json.load(f)
 	return config
 	
@@ -133,6 +133,7 @@ class APRSBase(object):
 		there are other methods meant for higher frequency fixes - GlideTrak protocol.
 		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
 		"""
+		
 		logging.info('Uploading {:}'.format(json_dict))
 		# from BB's code
 		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
