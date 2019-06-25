@@ -11,11 +11,20 @@ Each pilot to be tracked needs to
 
 I suspect that the IMEI identifiers need to be different for different sources, i.e. if a pilot wishes to have both ogn and aprs trackers used, two different IMEI identifiers will be needed.
 
+#### Installation
+
+clone this repository into a folder and use pip to install it
+~~~~
+	git clone https://github.com/lniv/x2gpaero.git
+	cd x2gpaero
+	pip3 install -e .
+~~~~
+		
 #### Usage
 
-./x2gpaero/aprs2gp.py ~/tmp/sample_config.json
+aprs2gpaero ~/tmp/sample_config.json
 
-./x2gpaero/ogn2gp.py ~/tmp/sample_config.json
+ogn2gpaero ~/tmp/sample_config.json
 
 
 The config file is a json file (see [sample_config_structure.json](./sample_config_structure.json) for an example), with the following keys:
