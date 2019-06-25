@@ -66,7 +66,7 @@ class APRSBase(object):
 		self.last_print = 0
 		
 		self.locations = []
-		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('aprs2gpaero_log_%Y_%m_%d_%H_%M_%S.jsons'))
+		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_log_%Y_%m_%d_%H_%M_%S.jsons'.format(self.__class__.__name__)))
 		logging.basicConfig(filename= self.log_filename,
 							level= logging.DEBUG if _DEBUG else logging.INFO,
 							format='%(asctime)s %(levelname)-8s %(message)s',
