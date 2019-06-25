@@ -1,9 +1,9 @@
 from setuptools import setup
 
 setup(
-    name='aprs2gpaero',
-    description='Gateway for APRS/OGN traffic to glideport.aero',
-    version='0.0.2',
+    name='x2gpaero',
+    description='Gateway for APRS/OGN/X traffic to glideport.aero',
+    version='0.0.3',
     setup_requires=[],
     install_requires=[
         'aprslib',
@@ -11,7 +11,7 @@ setup(
         'requests',
     ],
     include_package_data=True,
-    packages=['aprs2gpaero'],
+    packages=['x2gpaero'],
     data_files=['LICENSE'],
     entry_points={
         'console_scripts': [

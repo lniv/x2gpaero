@@ -1,2 +1,5 @@
 aprs2gpaero.egg-info
 *.pyc
+env
+x2gpaero.egg-info/
+
