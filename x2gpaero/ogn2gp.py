@@ -3,9 +3,15 @@
 handle ogn to gpaero; it's really aprs as well, so it makes some sense 
 for it to live in the same rpository.
 i'm splitting the file for now mostly for convenience; logically it's a bit murky.
+
+june 29th test - works, but seems we have a 1h offset (too early vs aprs, garmin traces); i'm guessing DST somehow, so applying an adhoc fix.
+TODO: see about pushing climb rate data; it's displayed in the gauges, so it would be nice to bea able to fill it.
 """
 
 import argparse
+from datetime import datetime
+from timezonefinder import TimezoneFinder
+from pytz import timezone
 from x2gpaero.aprs2gp import APRSIS2GPRAW, config_file_reader, _USABLE_KEYWORDS
 from ogn.parser import parse as ogn_parse
 from ogn.parser import ParseError as OGNParseError
@@ -20,7 +26,23 @@ class OGN2GPAero(APRSIS2GPRAW):
 	"""
 
 	sock_block_len = 2**14
-	
+
+	# i don't want to pay the startup time; i could have one per trace, but it's annoying, and loading all to memory should mean that we've predone the optimization.
+	tf = TimezoneFinder(in_memory=True)
+
+	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
+		'''
+		shift a given time stamp by a daylight saving's time amount if needed.
+		Args:
+			timestamp: i.e. integer number of seconds, typically time since epoch
+			latitude: latitude of point of interest, degrees
+			longitude: longitude of point of interest, degrees
+		Returns:
+			timestamp shifted by appropriate dst amount, typically zero or one hour.
+		'''
+		tz = timezone(self.tf.timezone_at(lat = latitude, lng = longitude))
+		return timestamp + tz.dst(datetime.utcfromtimestamp(timestamp)).total_seconds()
+
 	def packet_parser(self, packet):
 		"""
 		convert the dictionary of an ogn packet to one conforming to what we expect from an aprs one.
@@ -38,6 +60,9 @@ class OGN2GPAero(APRSIS2GPRAW):
 				return None
 		if 'timestamp' in d:
 			d['timestamp'] = d['timestamp'].timestamp()
+			# since empirically i find that it doesn't account for dst, we'll do it manually
+			# i don't see the same effect for aprs packets, which is puzzling.
+			d['timestamp'] = self.shift_time_based_on_local_dst(d['timestamp'], ppac['latitude'], ppac['longitude'])
 		return d
 
 	def __init__(self,
