@@ -25,7 +25,9 @@ import socket
 import requests
 import json
 import tempfile
+import inspect
 from collections import deque
+from functools import wraps
 import argparse
 import aprslib
 
@@ -34,6 +36,7 @@ _LOG_ALL = False
 _UPLOAD = False # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+
 
 def config_file_reader(filename):
 	"""
@@ -45,25 +48,53 @@ def config_file_reader(filename):
 	return config
 
 
+def create_attr_from_args(func):
+	'''
+	decorator that create instance attributes from a method's arguments.
+	typically applied to the creator method, to reduce boilerplate.
+	e.g.
+
+	class M(object):
+
+		create_attr_from_args
+		def __init__(self, a, b, c, d = 4, e = 5):
+			pass
+
+	a = M(1,2,3, e = 17, d = 5)
+
+	will result in
+	a.__dict__ == {'a': 1, 'b': 2, 'c': 3, 'e': 17, 'd': 5}
+
+	'''
+	@wraps(func)
+	def wrapper(self, *args, **kwargs):
+		funcspec = inspect.getfullargspec(func)
+		# ignore self, update kwargs with the default values
+		for arg_name, def_value in zip(funcspec.args[len(args) + 1:], funcspec.defaults):
+			kwargs[arg_name] = kwargs.get(arg_name, def_value)
+		for k, v in list(zip(funcspec.args[1:], list(args))) + list(kwargs.items()):
+			setattr(self, k, v)
+		val = func(self, *args, **kwargs)
+		return val
+
+	return wrapper
+
+
 class APRSBase(object):
 	
-	def __init__(self, ids_to_be_tracked, **kwargs):
+	@create_attr_from_args
+	def __init__(self, ids_to_be_tracked, verbose = False, print_stats_every_x_seconds = 600, print_monitor_every_x_seconds = 2**64 -1, max_wait_between_checks = 1800.0, N_last_packets = 5, wait_between_checks = 1.0, min_packet_dt = 10.0, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		"""
-		self.ids_to_be_tracked = ids_to_be_tracked
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
-		self.verbose = kwargs.get('verbose', False)
-		self.print_stats_every_x_seconds = kwargs.get('print_stats_every_x_seconds', 600.0)
-		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
-		self.max_wait_between_checks = kwargs.get('max_wait_between_checks', 1800.0)
-		self.reset(**kwargs)
+		self.default_wait_between_checks = self.wait_between_checks
+		self.reset()
 		logging.info('kwargs = {:}'.format(kwargs))
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
 			logging.info('Tracking {:} : {:}'.format(aprs_id, IMEI))
-		
-	
-	def reset(self, **kwargs):
+
+	def reset(self):
 		# monitor will reassert thes, but just in case
 		self.start_time = 0
 		self.last_print = 0
@@ -77,15 +108,12 @@ class APRSBase(object):
 							datefmt='%Y_%m_%d_%H_%M_%S')
 		logging.getLogger().addHandler(logging.StreamHandler())
 		logging.info('Logging to ' + self.log_filename)
-		
-		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
-		self.recent_packets = {k : deque([], maxlen = kwargs.get('N_last_packets', 5)) for k in self.ids_to_be_tracked}
+		self.recent_packets = {k : deque([], maxlen = self.N_last_packets) for k in self.ids_to_be_tracked}
 		# accept new packet only after min_packet_dt seconds since last valid one.
-		self.min_packet_dt = kwargs.get('min_packet_dt', 10.0)
 		self.last_packet_time = {k : 0.0 for k in self.ids_to_be_tracked}
 		self.packet_stats = {k : {'good' : 0, 'rate_limit' : 0, 'duplicate' : 0} for k in self.ids_to_be_tracked}
-	
+
 	def get_loc(self):
 		raise NotImplementedError
 
