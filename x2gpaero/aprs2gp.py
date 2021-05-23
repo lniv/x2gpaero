@@ -32,7 +32,7 @@ import aprslib
 
 _DEBUG = False
 _LOG_ALL = False
-_UPLOAD = False # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
+_UPLOAD = True # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
 _USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'calculate_mean_window_sec', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
 
