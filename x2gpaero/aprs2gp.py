@@ -13,9 +13,6 @@ NOTE: it's problematic having a canned example here, for two reasons:
 2. the real packets must have some not so public info - IMEI values.
 """
 
-# TODO : change the overall average to some sort of box filter to give a better idea of real time conditions; maybe also keep the overall average.
-# since timing is unpredictable, running a filter is hard, but keeping a fifo with the last few numbers of packets and the time stamps should allow us to do this easily (though it's a bit more expensive computation wise.
-
 
 from __future__ import print_function
 
@@ -37,7 +34,7 @@ _DEBUG = False
 _LOG_ALL = False
 _UPLOAD = False # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'calculate_mean_window_sec', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
 
 
 def config_file_reader(filename):
@@ -84,6 +81,19 @@ def create_attr_from_args(func):
 
 class APRSBase(object):
 	
+	'''
+	base class for handling packets from aprs(like source) to glideport.aero
+	Args:
+		ids_to_be_tracked: dictionary of id's to IMEI
+		verbose: controls logging verbosity [False]
+		print_stats_every_x_seconds: period for logging / prints packet statistics [600]
+		print_monitor_every_x_seconds: period for a simple heartbeat, defaults to effectively off [2**64 -1]
+		max_wait_between_checks: never wait more than this before trying to get data again [1800.0]
+		N_last_packets: length of buffer kept for packet deduplication [5]
+		wait_between_checks: nominal time to wait after getting and processing one set of packets [1.0]
+		min_packet_dt: [10.0]
+	'''
+
 	@create_attr_from_args
 	def __init__(self, ids_to_be_tracked, verbose = False, print_stats_every_x_seconds = 600, print_monitor_every_x_seconds = 2**64 -1, max_wait_between_checks = 1800.0, N_last_packets = 5, wait_between_checks = 1.0, min_packet_dt = 10.0, **kwargs):
 		"""
@@ -348,27 +358,36 @@ class APRSIS2GPRAW(APRSIS2GP):
 	this is ugly and lousy, but for some reason i'm having issues connecting to the 14580 port.
 	the warnings about the traffic flooding the isp are a bit funny though, straight out of a 2400 baud era (if you were rich).
 	we're going to just take all of the data, and filter it by callsigns.
-	i'm testing this on a reasonably modern i7 laptop, but i really can't imagine that parsing ~100 mesages / sec (what i get in testing) is an issue on any reasonable hw these days.
+	i'm testing this on a reasonably modern i7 laptop, but i really can't imagine that parsing ~100 mesages / sec (what i get in testing) is an issue on any reasonable hw these days (and it doesn't seem to be on a raspberry pi zero w)
+	Args:
+		ids_to_be_tracked : a dictionary of callsign : IMEI items.
+		callsign : for self.logger into the APRS-IS server; but note that no password is used or needed since we're reading only, so it really could be anything valid.
+		addr: server address ['45.63.21.153']
+		port: server port [10152]
+		print_info_every_x_seconds: period over which to print a bit more detailed recent count etc info [1.0]
+		calculate_mean_window_sec: winodw over which we calculate recent rate [60]
+		max_consecutive_data_loss: reset connections if we got no packets this many times [3]
 	"""
-	
+
 	version = 0.01
 	sock_block_len = 2**14
 	
-	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, print_info_every_x_seconds = 1.0, **kwargs):
-		"""
-		ids_to_be_tracked : a dictionary of callsign : IMEI items.
-		callsign : for self.logger into the APRS-IS server; but note that no password is used or needed since we're reading only, so it really could be anything valid.
-		"""
+	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, print_info_every_x_seconds = 1.0, calculate_mean_window_sec = 60, max_consecutive_data_loss = 3, **kwargs):
 		self.addr = addr
 		self.port = port
 		self.print_info_every_x_seconds = print_info_every_x_seconds
-		self._buffer = ''
-		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
-		self._total_N_packets = 0
-		self.data_loss_counter = 0
+		self.calculate_mean_window_sec = calculate_mean_window_sec
+		self.max_consecutive_data_loss =  max_consecutive_data_loss
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
 		self.logger.info('Connecting to %s:%s', self.addr, self.port)
-		
+
+	def reset(self):
+		super().reset()
+		self._buffer = ''
+		self._total_N_packets = 0
+		self._packet_count_bubffer = deque([], maxlen = 1000) # use to calculate mean rates; should be deep enough that we exclude based on age, but limit to avoid memory issues.
+		self.data_loss_counter = 0
+
 	def prepare_connection(self, **kwargs):
 		self.raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.raw_socket.connect((self.addr, self.port))
@@ -399,11 +418,15 @@ class APRSIS2GPRAW(APRSIS2GP):
 			self._buffer = pre_data[-1]
 			data = pre_data[:-1]
 			now = time.time()
+			# add the recent count, then filter
+			self._packet_count_bubffer.append((len(data), time.time()))
+			while time.time() - self._packet_count_bubffer[0][1] > self.calculate_mean_window_sec:
+				self._packet_count_bubffer.popleft()
+			self.logger.info('%0d packets in mean rate calculation buffer', len(self._packet_count_bubffer))
 			self._total_N_packets += len(data)
 			if now - self.last_print > self.print_info_every_x_seconds:
 				self.last_print = now
-				# TODO drop the dt?
-				self.logger.info('dt = %0.1f sec, N_packets %0d, mean rate %0.2f packets / sec', now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time))
+				self.logger.info('Got %0d packets, overall mean rate %0.2f packets / sec over %0d sec, over last %0.1f sec mean rate = %0.2f packets / sec', len(data), self._total_N_packets / (time.time() - self.start_time), time.time() - self.start_time, self.calculate_mean_window_sec, sum([x[0] for x in self._packet_count_bubffer]) /  (self._packet_count_bubffer[-1][1] - self._packet_count_bubffer[0][1]))
 			for packet_i, packet in enumerate(data):
 				self.filter_callsigns(packet, packet_i = packet_i)
 			if len(data) < 2: # 1?
