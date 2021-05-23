@@ -13,6 +13,9 @@ NOTE: it's problematic having a canned example here, for two reasons:
 2. the real packets must have some not so public info - IMEI values.
 """
 
+# TODO : change the overall average to some sort of box filter to give a better idea of real time conditions; maybe also keep the overall average.
+# since timing is unpredictable, running a filter is hard, but keeping a fifo with the last few numbers of packets and the time stamps should allow us to do this easily (though it's a bit more expensive computation wise.
+
 from __future__ import print_function
 
 import os
@@ -28,9 +31,9 @@ import aprslib
 
 _DEBUG = False
 _LOG_ALL = False
-_UPLOAD = True
+_UPLOAD = False # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
 
 def config_file_reader(filename):
 	"""
@@ -40,7 +43,7 @@ def config_file_reader(filename):
 	with open(filename, 'r') as f:
 		config = json.load(f)
 	return config
-	
+
 
 class APRSBase(object):
 	
@@ -51,7 +54,7 @@ class APRSBase(object):
 		self.ids_to_be_tracked = ids_to_be_tracked
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.verbose = kwargs.get('verbose', False)
-		self.print_info_every_x_seconds = kwargs.get('print_info_every_x_seconds', 1.0)
+		self.print_stats_every_x_seconds = kwargs.get('print_stats_every_x_seconds', 600.0)
 		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
 		self.max_wait_between_checks = kwargs.get('max_wait_between_checks', 1800.0)
 		self.reset(**kwargs)
@@ -64,6 +67,7 @@ class APRSBase(object):
 		# monitor will reassert thes, but just in case
 		self.start_time = 0
 		self.last_print = 0
+		self.last_stats_print = 0
 		
 		self.locations = []
 		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_log_%Y_%m_%d_%H_%M_%S.jsons'.format(self.__class__.__name__)))
@@ -84,12 +88,18 @@ class APRSBase(object):
 	
 	def get_loc(self):
 		raise NotImplementedError
-	
+
+	def log_stats(self):
+		'''
+		pretty print some overall statistics
+		'''
+		logging.info('packet stats : %s' % self.packet_stats)
+
 	def cleanup(self, **kwargs):
 		"""
 		any actions deemed prudent when stopping monitoring
 		"""
-		logging.info('packet stats : %s' % self.packet_stats)
+		self.log_stats()
 	
 	def monitor(self):
 		"""
@@ -103,12 +113,7 @@ class APRSBase(object):
 		self.last_print = self.start_time
 		while True:
 			now = time.time()
-			# usually i would employ nan, but i don't want to force numpy.
-			if now - self.last_print > self.print_monitor_every_x_seconds:
-				self.last_print = now
-				logging.info('monitor dt = {:0.1f} sec'.format(time.time() - self.start_time))
 			try:
-				
 				self.get_loc()
 				self.send_locations()
 				time.sleep(self.wait_between_checks)
@@ -127,6 +132,17 @@ class APRSBase(object):
 				else:
 					self.wait_between_checks *= 2
 					logging.warning('Problem monitoring due to {:}, increasing wait time by x2 to {:0.1f} sec'.format(e, self.wait_between_checks))
+			# logging various stats etc, catch everything
+			try:
+				now = time.time() # some time has passed, best get a correct time stamp
+				if now - self.last_stats_print > self.print_stats_every_x_seconds:
+					self.last_stats_print = now
+					self.log_stats()
+				if now - self.last_print > self.print_monitor_every_x_seconds:
+					self.last_print = now
+					logging.info('monitor dt = {:0.1f} sec'.format(time.time() - self.start_time))
+			except Exception as e:
+				logging.error('Failed to log misc info due to %s', e)
 	
 	def upload_packet_to_gpaero(self, json_dict):
 		"""
@@ -236,7 +252,7 @@ class APRSIS2GP(APRSBase):
 				# i can't gaurantee that we had an independent time stamp, so we'll just use the location information;
 				# this of couse is not guaranteed unitque, but i'm willing to accept the potential loss if one of the last few packets match exactly.
 				short_packet_data = '{:} {:} {:}'.format(ppac['longitude'], ppac['latitude'], ppac.get('altitude', 0))
-				# get timestamp from packet, if included - not common.
+				# get timestamp from packet, if included - not common. (actually, not common for aprs, is common for flarm / ogn)
 				timestamp = ppac.get('timestamp', time.time())
 				if short_packet_data in self.recent_packets.get(ppac['from'], []):
 					self.packet_stats[ppac['from']]['duplicate'] += 1
@@ -288,13 +304,14 @@ class APRSIS2GPRAW(APRSIS2GP):
 	version = 0.01
 	sock_block_len = 2**14
 	
-	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, **kwargs):
+	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, print_info_every_x_seconds = 1.0, **kwargs):
 		"""
 		ids_to_be_tracked : a dictionary of callsign : IMEI items.
 		callsign : for logging into the APRS-IS server; but note that no password is used or needed since we're reading only, so it really could be anything valid.
 		"""
 		self.addr = addr
 		self.port = port
+		self.print_info_every_x_seconds = print_info_every_x_seconds
 		self._buffer = ''
 		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
 		self._total_N_packets = 0
@@ -419,7 +436,7 @@ other options available in module.
 ''', formatter_class= argparse.RawTextHelpFormatter)
 	parser.add_argument('config', type = str, default = '',
 			help= '''
-json config file - must have 
+json config file - must have
 callsign - string
 ids - a dictionary of 'from' aprs packet : IMEI identifiers
 optional {:}'''.format(_USABLE_KEYWORDS))

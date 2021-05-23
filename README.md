@@ -40,6 +40,7 @@ The config file is a json file (see [sample_config_structure.json](./sample_conf
 * max_consecutive_data_loss - the socket will be reset if no packets are received for this many consecutive cycles. Defaults to 3.
 * socket_timeout - seconds. Defaults to twice the time between checks.
 * print_info_every_x_seconds -  default to 1 sec.
+* print_stats_every_x_seconds - default to 600 sec.
 * print_monitor_every_x_seconds  - defults to effectively off.
 
 
