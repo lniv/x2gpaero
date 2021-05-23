@@ -60,9 +60,6 @@ class OGN2GPAero(APRSIS2GPRAW):
 				return None
 		if 'timestamp' in d:
 			d['timestamp'] = d['timestamp'].timestamp()
-			# since empirically i find that it doesn't account for dst, we'll do it manually
-			# i don't see the same effect for aprs packets, which is puzzling.
-			d['timestamp'] = self.shift_time_based_on_local_dst(d['timestamp'], ppac['latitude'], ppac['longitude'])
 		return d
 
 	def __init__(self,

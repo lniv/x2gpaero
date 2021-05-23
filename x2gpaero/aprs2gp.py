@@ -152,6 +152,19 @@ class APRSBase(object):
 	def get_loc(self):
 		raise NotImplementedError
 
+	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
+		'''
+		shift a time stamp based on local daylight saving time.
+		stub meant to be overloaded if needed - as is apparently the case for OGN.
+		Args:
+			timestamp: seconds since epoch
+			latitude: position, degrees
+			longitude: degrees
+		Returns:
+			shifted timestamp, as needed.
+		'''
+		return timestamp
+
 	def log_stats(self):
 		'''
 		pretty print some overall statistics
@@ -322,6 +335,9 @@ class APRSIS2GP(APRSBase):
 					self.logger.warning('Got new packet too soon - %0.1f sec after last one, < %0.1f sec : %s', timestamp - self.last_packet_time.get(ppac['from'], 0), self.min_packet_dt, packet)
 					self.packet_stats[ppac['from']]['rate_limit'] += 1
 				else:
+					# i seem to have an issue with OGN and daylight saving time.
+					# however, the place to fix it is post filtering / selection, so it's here - the default fix method is a passthrough.
+					timestamp= self.shift_time_based_on_local_dst(timestamp, ppac['latitude'], ppac['longitude'])
 					self.packet_stats[ppac['from']]['good'] += 1
 					# only count valid packet for rate limiting.
 					self.last_packet_time[ppac['from']] = timestamp
@@ -422,7 +438,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 			self._packet_count_bubffer.append((len(data), time.time()))
 			while time.time() - self._packet_count_bubffer[0][1] > self.calculate_mean_window_sec:
 				self._packet_count_bubffer.popleft()
-			self.logger.info('%0d packets in mean rate calculation buffer', len(self._packet_count_bubffer))
+			self.logger.debug('%0d packets in mean rate calculation buffer', len(self._packet_count_bubffer))
 			self._total_N_packets += len(data)
 			if now - self.last_print > self.print_info_every_x_seconds:
 				self.last_print = now
