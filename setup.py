@@ -9,7 +9,7 @@ setup(
         'aprslib',
         'ogn-client',
         'requests',
-        'timezonefinder[numba]',
+        'timezonefinder',
         'pytz',
         'datetime',
     ],

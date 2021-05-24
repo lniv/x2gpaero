@@ -10,7 +10,7 @@ TODO: see about pushing climb rate data; it's displayed in the gauges, so it wou
 
 import argparse
 from datetime import datetime
-from timezonefinder import TimezoneFinder
+from timezonefinder import TimezoneFinderL
 from pytz import timezone
 from x2gpaero.aprs2gp import APRSIS2GPRAW, config_file_reader, _USABLE_KEYWORDS
 from ogn.parser import parse as ogn_parse
@@ -28,7 +28,7 @@ class OGN2GPAero(APRSIS2GPRAW):
 	sock_block_len = 2**14
 
 	# i don't want to pay the startup time; i could have one per trace, but it's annoying, and loading all to memory should mean that we've predone the optimization.
-	tf = TimezoneFinder(in_memory=True)
+	tf = TimezoneFinderL(in_memory=True)
 
 	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
 		'''
