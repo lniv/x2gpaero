@@ -102,12 +102,15 @@ class APRSBase(object):
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.default_wait_between_checks = self.wait_between_checks
 		self.setup_loggers()
-		self.logger.info('git branch %s', subprocess.check_output(['git', 'branch', '-v']).decode('utf-8').split('\n')[0] )
-		git_diff = subprocess.check_output(['git',  'diff']).decode('utf-8')
-		if len(git_diff) > 0:
-			self.logger.info('git diff\n%s\n*', git_diff)
-		else:
-			self.logger.info('git repository is clean')
+		try:
+			self.logger.info('git branch %s', subprocess.check_output(['git', 'branch', '-v']).decode('utf-8').split('\n')[0] )
+			git_diff = subprocess.check_output(['git',  'diff']).decode('utf-8')
+			if len(git_diff) > 0:
+				self.logger.info('git diff\n%s\n*', git_diff)
+			else:
+				self.logger.info('git repository is clean')
+		except subprocess.CalledProcessError:
+			self.logger('cannot log git status')
 		self.reset()
 		self.logger.info('kwargs = %s', kwargs)
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
