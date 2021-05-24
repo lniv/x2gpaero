@@ -110,7 +110,7 @@ class APRSBase(object):
 			else:
 				self.logger.info('git repository is clean')
 		except subprocess.CalledProcessError:
-			self.logger('cannot log git status')
+			self.logger.warning('cannot log git status')
 		self.reset()
 		self.logger.info('kwargs = %s', kwargs)
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
