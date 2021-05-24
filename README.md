@@ -13,6 +13,11 @@ I suspect that the IMEI identifiers need to be different for different sources, 
 
 #### Installation
 
+on a raspberry pi, pip won't install the BLAS libraries necessary for numpy, so one needs to
+~~~~
+sudo apt-get install libatlas-base-dev
+~~~~
+
 clone this repository into a folder and use pip to install it
 ~~~~
 	git clone https://github.com/lniv/x2gpaero.git
