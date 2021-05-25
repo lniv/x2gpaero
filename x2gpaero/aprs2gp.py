@@ -338,12 +338,12 @@ class APRSIS2GP(APRSBase):
 					self.logger.warning('Got new packet too soon - %0.1f sec after last one, < %0.1f sec : %s', timestamp - self.last_packet_time.get(ppac['from'], 0), self.min_packet_dt, packet)
 					self.packet_stats[ppac['from']]['rate_limit'] += 1
 				else:
+					self.packet_stats[ppac['from']]['good'] += 1
+					self.last_packet_time[ppac['from']] = timestamp
 					# i seem to have an issue with OGN and daylight saving time.
 					# however, the place to fix it is post filtering / selection, so it's here - the default fix method is a passthrough.
+					# shift timestamp \after\ i save the recent packet time - so i only change what's uploaded, not the local time stamping.
 					timestamp= self.shift_time_based_on_local_dst(timestamp, ppac['latitude'], ppac['longitude'])
-					self.packet_stats[ppac['from']]['good'] += 1
-					# only count valid packet for rate limiting.
-					self.last_packet_time[ppac['from']] = timestamp
 					self.logger.info('Adding packet : %s', ppac)
 					self.locations.append({'srccall' : ppac['from'],
 								'lng' : ppac['longitude'],
