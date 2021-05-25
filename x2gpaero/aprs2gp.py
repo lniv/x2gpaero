@@ -129,7 +129,7 @@ class APRSBase(object):
 
 		rlogger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
 
-		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_log_%Y_%m_%d_%H_%M_%S.jsons'.format(self.__class__.__name__)))
+		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_%Y_%m_%d_%H_%M_%S.log'.format(self.__class__.__name__)))
 		fh = logging.FileHandler(self.log_filename)
 		sh = logging.StreamHandler()
 		for handle in (fh, sh):
