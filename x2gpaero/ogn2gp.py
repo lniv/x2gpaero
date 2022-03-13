@@ -95,6 +95,7 @@ class OGN2GPAero(APRSIS2GPRAW):
 		self.rx_names_to_reject = [x.lower() for x in rx_names_to_reject]
 		self.address_types_accepted = address_types_accepted
 		super(OGN2GPAero, self).__init__(ids_to_be_tracked, callsign, addr = addr, port = port, **kwargs)
+		self.logger.info(f'Will reject {self.rx_names_to_reject} and accept address types {self.address_types_accepted}')
 
 
 def main():
