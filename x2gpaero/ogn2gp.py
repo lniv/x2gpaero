@@ -18,6 +18,14 @@ from ogn.parser import ParseError as OGNParseError
 from ogn.client import settings as ogn_settings
 
 
+# default list of receivers that we don't want to forward ; in general, these are sources that already should be reporting to glideport.aero themselves, such as inreach. These will be forced to lower case when comparing.
+RX_NAMES_TO_REJECT = ('inreach', 'spot', 'adsb')
+
+# default address type we're accepting - anything else will be rejected.
+ADDRESS_TYPES_ACCEPTED = (1, 2, 3) # see http://wiki.glidernet.org/wiki:ogn-flavoured-aprs ; lower two bits encode address type, 00 is unknown.
+
+_OGN_USABLE_KEYWORDS = _USABLE_KEYWORDS + ['rx_names_to_reject', 'address_types_accepted']
+
 class OGN2GPAero(APRSIS2GPRAW):
 	"""
 	take full OGN feed, filter client side and push appropriate to gpaero.
@@ -47,11 +55,26 @@ class OGN2GPAero(APRSIS2GPRAW):
 		"""
 		convert the dictionary of an ogn packet to one conforming to what we expect from an aprs one.
 		in practice, handles addresses and time stamps.
+		also, rejects packets whose address type is not on the approved list, or whose receiver name matches a list of receiver non grata
 		"""
 		d = ogn_parse(packet)
 		# FLARM (and i guess other non aprs) packets use an address field in the same manner an aprs uses the from field.
 		#print('packet type = %s %s ' % (d['aprs_type'], d))
 		if not d.get('aprs_type', None) == 'position':
+			return None
+		# filtering station and address type. could probably set to debug, but for now i'd like this to show in logs.
+		try:
+			# defaulting to unknown - if that is in the accepted types, than really anything should pass, and i'm not filtering it.
+			address_type = int(d.get('comment', 'id00')[2:4], base = 16) & 0x03
+		except ValueError:
+			self.logger.warning('failed to extract aircraft id from %s, discarding packet', d)
+			return None
+		if not address_type in self.address_types_accepted:
+			self.logger.info('address type %s not in %s, discarding packet %s', address_type, self.address_types_accepted, d)
+			return None
+		lower_case_rx_name = d.get('receiver_name', '').lower()
+		if any([lower_case_rx_name.find(nongood_rx_name) >= 0 for nongood_rx_name in self.rx_names_to_reject]):
+			self.logger.info('receiver is one of %s; discarding packet %s', self.rx_names_to_reject, d)
 			return None
 		if not 'from' in d:
 			if 'address' in d:
@@ -64,9 +87,13 @@ class OGN2GPAero(APRSIS2GPRAW):
 
 	def __init__(self,
 			ids_to_be_tracked,
+			rx_names_to_reject = RX_NAMES_TO_REJECT,
+			address_types_accepted = ADDRESS_TYPES_ACCEPTED,
 			callsign = 'N0CALL',
 			addr = ogn_settings.APRS_SERVER_HOST,
 			port = ogn_settings.APRS_SERVER_PORT_FULL_FEED, **kwargs):
+		self.rx_names_to_reject = [x.lower() for x in rx_names_to_reject]
+		self.address_types_accepted = address_types_accepted
 		super(OGN2GPAero, self).__init__(ids_to_be_tracked, callsign, addr = addr, port = port, **kwargs)
 
 
@@ -77,8 +104,8 @@ send OGN location packets for specific users to gpaero
 	parser.add_argument('config', type = str, default = '',
 			help= '''
 json config file - must have 
-ids - a dictionary of 'address' (usualll S-mode code) : IMEI identifier
-optional {:}'''.format(_USABLE_KEYWORDS))
+ids - a dictionary of 'address' (usually S-mode code) : IMEI identifier
+optional {:}'''.format(_OGN_USABLE_KEYWORDS))
 	args = parser.parse_args()
 	config = config_file_reader(args.config)
 	ids_to_be_tracked = config.pop('ids')
