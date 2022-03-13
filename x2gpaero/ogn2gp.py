@@ -62,19 +62,19 @@ class OGN2GPAero(APRSIS2GPRAW):
 		#print('packet type = %s %s ' % (d['aprs_type'], d))
 		if not d.get('aprs_type', None) == 'position':
 			return None
-		# filtering station and address type. could probably set to debug, but for now i'd like this to show in logs.
+		# filtering station and address type.
 		try:
 			# defaulting to unknown - if that is in the accepted types, than really anything should pass, and i'm not filtering it.
 			address_type = int(d.get('comment', 'id00')[2:4], base = 16) & 0x03
 		except ValueError:
-			self.logger.warning('failed to extract aircraft id from %s, discarding packet', d)
+			self.logger.debug('failed to extract aircraft id from %s, discarding packet', d)
 			return None
 		if not address_type in self.address_types_accepted:
-			self.logger.info('address type %s not in %s, discarding packet %s', address_type, self.address_types_accepted, d)
+			self.logger.debug('address type %s not in %s, discarding packet %s', address_type, self.address_types_accepted, d)
 			return None
 		lower_case_rx_name = d.get('receiver_name', '').lower()
 		if any([lower_case_rx_name.find(nongood_rx_name) >= 0 for nongood_rx_name in self.rx_names_to_reject]):
-			self.logger.info('receiver is one of %s; discarding packet %s', self.rx_names_to_reject, d)
+			self.logger.debug('receiver is one of %s; discarding packet %s', self.rx_names_to_reject, d)
 			return None
 		if not 'from' in d:
 			if 'address' in d:
