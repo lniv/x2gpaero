@@ -292,7 +292,19 @@ class APRSIS2GP(APRSBase):
 		minimal wrapper in this case, but expect to be overwritten for e.g. ogn parsing
 		"""
 		return aprslib.parse(packet)
-	
+
+	def packet_post_id_filter(self, ppac):
+		'''
+		can be used to filter packets that are already in our id database, based on parsed charactristics
+		Args:
+			ppac: a parsed packet (dictionary)
+		Returns:
+			packet, potentially modified OR None (in which case we'll drop the packet).
+
+		for base class, this is a null operation.
+		'''
+		return ppac
+
 	def __init__(self, ids_to_be_tracked, callsign, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
@@ -322,6 +334,10 @@ class APRSIS2GP(APRSBase):
 			self.logger.debug('parsed :\n%s', ppac)
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
+				# drop undesirable packets (for any reason) before they affect stats.
+				ppac = self.packet_post_id_filter(ppac)
+				if ppac is None:
+					return
 				# we should drop duplicate packets, or those that are too frequent to be real.
 				# ideally, the packets should have a time stamp; tinytrak has this, and likely others, but it's optional.
 				# check if we've seen this packet recently, and if so, drop it
