@@ -1,4 +1,6 @@
 {"callsign": "KXXYYZ",
 "ids": {"XXXXXX-9": "IMEI1",
 		"YYYYYY-7": "IMEI2"},
-"wait_between_checks": 0.15}
+"wait_between_checks": 0.15,
+"print_stats_every_x_seconds" : 20,
+"verbose" : false}

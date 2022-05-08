@@ -13,6 +13,11 @@ I suspect that the IMEI identifiers need to be different for different sources, 
 
 #### Installation
 
+on a raspberry pi, pip won't install the BLAS libraries necessary for numpy, so one needs to
+~~~~
+sudo apt-get install libatlas-base-dev
+~~~~
+
 clone this repository into a folder and use pip to install it
 ~~~~
 	git clone https://github.com/lniv/x2gpaero.git
@@ -40,6 +45,7 @@ The config file is a json file (see [sample_config_structure.json](./sample_conf
 * max_consecutive_data_loss - the socket will be reset if no packets are received for this many consecutive cycles. Defaults to 3.
 * socket_timeout - seconds. Defaults to twice the time between checks.
 * print_info_every_x_seconds -  default to 1 sec.
+* print_stats_every_x_seconds - default to 600 sec.
 * print_monitor_every_x_seconds  - defults to effectively off.
 
 

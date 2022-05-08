@@ -13,24 +13,29 @@ NOTE: it's problematic having a canned example here, for two reasons:
 2. the real packets must have some not so public info - IMEI values.
 """
 
+
 from __future__ import print_function
 
 import os
 import time
 import logging
+import subprocess
 import socket
 import requests
 import json
 import tempfile
+import inspect
 from collections import deque
+from functools import wraps
 import argparse
 import aprslib
 
 _DEBUG = False
 _LOG_ALL = False
-_UPLOAD = True
+_UPLOAD = True # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_monitor_every_x_seconds', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'calculate_mean_window_sec', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+
 
 def config_file_reader(filename):
 	"""
@@ -40,56 +45,140 @@ def config_file_reader(filename):
 	with open(filename, 'r') as f:
 		config = json.load(f)
 	return config
-	
+
+
+def create_attr_from_args(func):
+	'''
+	decorator that create instance attributes from a method's arguments.
+	typically applied to the creator method, to reduce boilerplate.
+	e.g.
+
+	class M(object):
+
+		create_attr_from_args
+		def __init__(self, a, b, c, d = 4, e = 5):
+			pass
+
+	a = M(1,2,3, e = 17, d = 5)
+
+	will result in
+	a.__dict__ == {'a': 1, 'b': 2, 'c': 3, 'e': 17, 'd': 5}
+
+	'''
+	@wraps(func)
+	def wrapper(self, *args, **kwargs):
+		funcspec = inspect.getfullargspec(func)
+		# ignore self, update kwargs with the default values
+		for arg_name, def_value in zip(funcspec.args[len(args) + 1:], funcspec.defaults):
+			kwargs[arg_name] = kwargs.get(arg_name, def_value)
+		for k, v in list(zip(funcspec.args[1:], list(args))) + list(kwargs.items()):
+			setattr(self, k, v)
+		val = func(self, *args, **kwargs)
+		return val
+
+	return wrapper
+
 
 class APRSBase(object):
 	
-	def __init__(self, ids_to_be_tracked, **kwargs):
+	'''
+	base class for handling packets from aprs(like source) to glideport.aero
+	Args:
+		ids_to_be_tracked: dictionary of id's to IMEI
+		verbose: controls logging verbosity [False]
+		print_stats_every_x_seconds: period for logging / prints packet statistics [600]
+		print_monitor_every_x_seconds: period for a simple heartbeat, defaults to effectively off [2**64 -1]
+		max_wait_between_checks: never wait more than this before trying to get data again [1800.0]
+		N_last_packets: length of buffer kept for packet deduplication [5]
+		wait_between_checks: nominal time to wait after getting and processing one set of packets [1.0]
+		min_packet_dt: [10.0]
+	'''
+
+	@create_attr_from_args
+	def __init__(self, ids_to_be_tracked, verbose = False, print_stats_every_x_seconds = 600, print_monitor_every_x_seconds = 2**64 -1, max_wait_between_checks = 1800.0, N_last_packets = 5, wait_between_checks = 1.0, min_packet_dt = 10.0, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		"""
-		self.ids_to_be_tracked = ids_to_be_tracked
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
-		self.verbose = kwargs.get('verbose', False)
-		self.print_info_every_x_seconds = kwargs.get('print_info_every_x_seconds', 1.0)
-		self.print_monitor_every_x_seconds = kwargs.get('print_monitor_every_x_seconds', 2**64 -1)
-		self.max_wait_between_checks = kwargs.get('max_wait_between_checks', 1800.0)
-		self.reset(**kwargs)
-		logging.info('kwargs = {:}'.format(kwargs))
+		self.default_wait_between_checks = self.wait_between_checks
+		self.setup_loggers()
+		try:
+			self.logger.info('git branch %s', subprocess.check_output(['git', 'branch', '-v']).decode('utf-8').split('\n')[0] )
+			git_diff = subprocess.check_output(['git',  'diff']).decode('utf-8')
+			if len(git_diff) > 0:
+				self.logger.info('git diff\n%s\n*', git_diff)
+			else:
+				self.logger.info('git repository is clean')
+		except subprocess.CalledProcessError:
+			self.logger.warning('cannot log git status')
+		self.reset()
+		self.logger.info('kwargs = %s', kwargs)
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
-			logging.info('Tracking {:} : {:}'.format(aprs_id, IMEI))
-		
-	
-	def reset(self, **kwargs):
+			self.logger.info('Tracking %s : %s', aprs_id, IMEI)
+
+	def setup_loggers(self):
+		'''
+		setup up loggers the way i want them - mostly so they time stamp all, and log to file and console
+		'''
+		# put the root logger into a clean state.
+		rlogger = logging.getLogger()
+		while len(rlogger.handlers) > 0:
+			handler = rlogger.handlers[0]
+			rlogger.removeHandler(handler)
+			handler.close()
+
+		rlogger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
+
+		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_%Y_%m_%d_%H_%M_%S.log'.format(self.__class__.__name__)))
+		fh = logging.FileHandler(self.log_filename)
+		sh = logging.StreamHandler()
+		for handle in (fh, sh):
+			# set up message and time formatting
+			handle.setFormatter(logging.Formatter('%(asctime)s %(levelname)-8s %(message)s', '%Y_%m_%d_%H_%M_%S'))
+			rlogger.addHandler(handle)
+		self.logger = logging.getLogger('X2GP')
+		self.logger.info('Logging to %s', self.log_filename)
+
+	def reset(self):
 		# monitor will reassert thes, but just in case
 		self.start_time = 0
 		self.last_print = 0
+		self.last_stats_print = 0
 		
 		self.locations = []
-		self.log_filename = os.path.join(tempfile.gettempdir(), time.strftime('{:}_log_%Y_%m_%d_%H_%M_%S.jsons'.format(self.__class__.__name__)))
-		logging.basicConfig(filename= self.log_filename,
-							level= logging.DEBUG if _DEBUG else logging.INFO,
-							format='%(asctime)s %(levelname)-8s %(message)s',
-							datefmt='%Y_%m_%d_%H_%M_%S')
-		logging.getLogger().addHandler(logging.StreamHandler())
-		logging.info('Logging to ' + self.log_filename)
-		
-		self.default_wait_between_checks = kwargs.get('wait_between_checks', 1.0)
 		self.wait_between_checks = self.default_wait_between_checks
-		self.recent_packets = {k : deque([], maxlen = kwargs.get('N_last_packets', 5)) for k in self.ids_to_be_tracked}
+		self.recent_packets = {k : deque([], maxlen = self.N_last_packets) for k in self.ids_to_be_tracked}
 		# accept new packet only after min_packet_dt seconds since last valid one.
-		self.min_packet_dt = kwargs.get('min_packet_dt', 10.0)
 		self.last_packet_time = {k : 0.0 for k in self.ids_to_be_tracked}
 		self.packet_stats = {k : {'good' : 0, 'rate_limit' : 0, 'duplicate' : 0} for k in self.ids_to_be_tracked}
-	
+
 	def get_loc(self):
 		raise NotImplementedError
-	
+
+	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
+		'''
+		shift a time stamp based on local daylight saving time.
+		stub meant to be overloaded if needed - as is apparently the case for OGN.
+		Args:
+			timestamp: seconds since epoch
+			latitude: position, degrees
+			longitude: degrees
+		Returns:
+			shifted timestamp, as needed.
+		'''
+		return timestamp
+
+	def log_stats(self):
+		'''
+		pretty print some overall statistics
+		'''
+		self.logger.info('packet stats : %s', self.packet_stats)
+
 	def cleanup(self, **kwargs):
 		"""
 		any actions deemed prudent when stopping monitoring
 		"""
-		logging.info('packet stats : %s' % self.packet_stats)
+		self.log_stats()
 	
 	def monitor(self):
 		"""
@@ -103,30 +192,36 @@ class APRSBase(object):
 		self.last_print = self.start_time
 		while True:
 			now = time.time()
-			# usually i would employ nan, but i don't want to force numpy.
-			if now - self.last_print > self.print_monitor_every_x_seconds:
-				self.last_print = now
-				logging.info('monitor dt = {:0.1f} sec'.format(time.time() - self.start_time))
 			try:
-				
 				self.get_loc()
 				self.send_locations()
 				time.sleep(self.wait_between_checks)
 				# reset wait if successful.
 				self.wait_between_checks = self.default_wait_between_checks
 			except KeyboardInterrupt:
-				logging.info('stopping upon request')
-				logging.info('Logged to ' + self.log_filename)
+				self.logger.info('stopping upon request')
+				self.logger.info('Logged to %s', self.log_filename)
 				self.cleanup()
 				break
 			except Exception as e:
 				if self.wait_between_checks > self.max_wait_between_checks:
 					# NOTE: might be better to terminate here, and e.g. let a cron job restart us?
 					self.wait_between_checks = self.max_wait_between_checks
-					logging.warning('Problem monitoring due to {:}, wait time capped at {:} sec'.format(e, self.max_wait_between_checks))
+					self.logger.warning('Problem monitoring due to %s, wait time capped at %0.1f sec', e, self.max_wait_between_checks)
 				else:
 					self.wait_between_checks *= 2
-					logging.warning('Problem monitoring due to {:}, increasing wait time by x2 to {:0.1f} sec'.format(e, self.wait_between_checks))
+					self.logger.warning('Problem monitoring due to %s, increasing wait time by x2 to %0.1f sec', e, self.wait_between_checks)
+			# self.logger various stats etc, catch everything
+			try:
+				now = time.time() # some time has passed, best get a correct time stamp
+				if now - self.last_stats_print > self.print_stats_every_x_seconds:
+					self.last_stats_print = now
+					self.log_stats()
+				if now - self.last_print > self.print_monitor_every_x_seconds:
+					self.last_print = now
+					self.logger.info('monitor dt = %0.1f sec', time.time() - self.start_time)
+			except Exception as e:
+				self.logger.error('Failed to log misc info due to %s', e)
 	
 	def upload_packet_to_gpaero(self, json_dict):
 		"""
@@ -135,17 +230,17 @@ class APRSBase(object):
 		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
 		"""
 		if not _UPLOAD:
-			logging.info('would upload, but skipping {:}'.format(json_dict))
+			self.logger.info('would upload, but skipping %s', json_dict)
 			return
 		
-		logging.info('Uploading {:}'.format(json_dict))
+		self.logger.info('Uploading %s', json_dict)
 		# from BB's code
 		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
 		# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
 		
 		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
 		r.raise_for_status()
-		logging.info('Received {:}'.format(r.text))
+		self.logger.info('Received %s', r.text)
 	
 	def send_locations(self):
 		"""
@@ -171,8 +266,8 @@ class APRSBase(object):
 
 
 		"""
-		if (_DEBUG or self.verbose) and len(self.locations) > 0:
-			logging.debug('sending {:0d} locations'.format(len(self.locations)))
+		if len(self.locations) > 0:
+			self.logger.debug('sending %0d locations', len(self.locations))
 		
 		for entry in self.locations:
 			try:
@@ -183,7 +278,7 @@ class APRSBase(object):
 					}
 				self.upload_packet_to_gpaero(json_dict)
 			except Exception as e:
-				logging.warning('send_locations failed due to {:} raw : {:}'.format(e, entry))
+				self.logger.warning('send_locations failed due to *%s* raw : %s', e, entry)
 		self.locations = []
 		
 
@@ -197,7 +292,19 @@ class APRSIS2GP(APRSBase):
 		minimal wrapper in this case, but expect to be overwritten for e.g. ogn parsing
 		"""
 		return aprslib.parse(packet)
-	
+
+	def packet_post_id_filter(self, ppac):
+		'''
+		can be used to filter packets that are already in our id database, based on parsed charactristics
+		Args:
+			ppac: a parsed packet (dictionary)
+		Returns:
+			packet, potentially modified OR None (in which case we'll drop the packet).
+
+		for base class, this is a null operation.
+		'''
+		return ppac
+
 	def __init__(self, ids_to_be_tracked, callsign, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
@@ -205,7 +312,7 @@ class APRSIS2GP(APRSBase):
 		"""
 		super(APRSIS2GP, self).__init__(ids_to_be_tracked, **kwargs)
 		self.callsign = callsign
-		logging.info('Using callsign ' +  self.callsign)
+		self.logger.info('Using callsign %s', self.callsign)
 		self.prepare_connection(**kwargs)
 	
 	def prepare_connection(self, **kwargs):
@@ -213,8 +320,7 @@ class APRSIS2GP(APRSBase):
 		self.delay_before_check = kwargs.get('delay', 0.5)
 		
 	def filter_callsigns(self, packet, packet_i = -1):
-		if self.verbose:
-			logging.debug('raw packet : %s' % packet)
+		self.logger.debug('raw packet : %s', packet)
 		if len(packet) == 0:
 			return
 		try:
@@ -225,10 +331,13 @@ class APRSIS2GP(APRSBase):
 				with open(os.path.join(tempfile.gettempdir(), 'aprs2gpaero_all_packet.log'), 'a') as f:
 					# termination chosen so that i can use the file for debugging 
 					f.write(packet+'\r\n')
-			if self.verbose:
-				logging.debug('parsed :\n%s' % ppac)
+			self.logger.debug('parsed :\n%s', ppac)
 			# the form below is useful for debuggging, but in reality we need exact matches since we need to translate to IMEI values.
 			if any([ppac['from'].startswith(x) for x in self.ids_to_be_tracked.keys()]):
+				# drop undesirable packets (for any reason) before they affect stats.
+				ppac = self.packet_post_id_filter(ppac)
+				if ppac is None:
+					return
 				# we should drop duplicate packets, or those that are too frequent to be real.
 				# ideally, the packets should have a time stamp; tinytrak has this, and likely others, but it's optional.
 				# check if we've seen this packet recently, and if so, drop it
@@ -236,44 +345,46 @@ class APRSIS2GP(APRSBase):
 				# i can't gaurantee that we had an independent time stamp, so we'll just use the location information;
 				# this of couse is not guaranteed unitque, but i'm willing to accept the potential loss if one of the last few packets match exactly.
 				short_packet_data = '{:} {:} {:}'.format(ppac['longitude'], ppac['latitude'], ppac.get('altitude', 0))
-				# get timestamp from packet, if included - not common.
+				# get timestamp from packet, if included - not common. (actually, not common for aprs, is common for flarm / ogn)
 				timestamp = ppac.get('timestamp', time.time())
 				if short_packet_data in self.recent_packets.get(ppac['from'], []):
 					self.packet_stats[ppac['from']]['duplicate'] += 1
-					logging.warning('Dropping duplicate of recent packet - %s' % packet)
+					self.logger.warning('Dropping duplicate of recent packet - %s', packet)
 				elif timestamp - self.last_packet_time.get(ppac['from'], 0) < self.min_packet_dt:
-					logging.warning('Got new packet too soon - %0.1f sec after last one, < %0.1f sec : %s' % (timestamp - self.last_packet_time.get(ppac['from'], 0), self.min_packet_dt, packet))
+					self.logger.warning('Got new packet too soon - %0.1f sec after last one, < %0.1f sec : %s', timestamp - self.last_packet_time.get(ppac['from'], 0), self.min_packet_dt, packet)
 					self.packet_stats[ppac['from']]['rate_limit'] += 1
 				else:
 					self.packet_stats[ppac['from']]['good'] += 1
-					# only count valid packet for rate limiting.
 					self.last_packet_time[ppac['from']] = timestamp
-					logging.info('Adding packet : {:}'.format(ppac))
+					# i seem to have an issue with OGN and daylight saving time.
+					# however, the place to fix it is post filtering / selection, so it's here - the default fix method is a passthrough.
+					# shift timestamp \after\ i save the recent packet time - so i only change what's uploaded, not the local time stamping.
+					timestamp= self.shift_time_based_on_local_dst(timestamp, ppac['latitude'], ppac['longitude'])
+					self.logger.info('Adding packet : %s', ppac)
 					self.locations.append({'srccall' : ppac['from'],
 								'lng' : ppac['longitude'],
 								'lat' : ppac['latitude'],
 								'altitude' : ppac.get('altitude', 0),  # exception, mostly for debugging, but i'm willing to accept trackers configured without altitude.
 								'time' : timestamp}) 
 					if _DEBUG or self.verbose:
-						logging.debug('after adding\n%s' % self.locations)
+						self.logger.debug('after adding\n%s', self.locations)
 				# adding this packet to the recent ones held for the id, regardless of validity
 				self.recent_packets[ppac['from']].append(short_packet_data)
-				
-			elif self.verbose:
-				logging.debug('from %s, skip' %ppac['from'])
+
+			self.logger.debug('from %s, skip', ppac['from'])
 		# we may want to define an explicit list of exceptions, so e.g. the ogn child can have a different one.
 		except Exception as e: #(aprslib.UnknownFormat, aprslib.ParseError:) as e:
-			logging.debug('filter_callsigns - i = {:0d} failed due to {:} raw packet *{:}*'.format(packet_i, e, packet))
+			self.logger.debug('filter_callsigns - i = %0d failed due to %s raw packet *%s*', packet_i, e, packet)
 		
 	def get_loc(self):
 		self.AIS.connect()
 		# necessary
 		time.sleep(self.delay_before_check)
-		logging.debug('connected')
+		self.logger.debug('connected')
 		self.AIS.consumer(self.filter_callsigns, raw=True, blocking=False)
-		logging.info('found\n{:}'.format(self.locations))
+		self.logger.info('found\n%s', self.locations)
 		self.AIS.close()
-		logging.debug('closed')
+		self.logger.debug('closed')
 		
 
 class APRSIS2GPRAW(APRSIS2GP):
@@ -282,38 +393,48 @@ class APRSIS2GPRAW(APRSIS2GP):
 	this is ugly and lousy, but for some reason i'm having issues connecting to the 14580 port.
 	the warnings about the traffic flooding the isp are a bit funny though, straight out of a 2400 baud era (if you were rich).
 	we're going to just take all of the data, and filter it by callsigns.
-	i'm testing this on a reasonably modern i7 laptop, but i really can't imagine that parsing ~100 mesages / sec (what i get in testing) is an issue on any reasonable hw these days.
+	i'm testing this on a reasonably modern i7 laptop, but i really can't imagine that parsing ~100 mesages / sec (what i get in testing) is an issue on any reasonable hw these days (and it doesn't seem to be on a raspberry pi zero w)
+	Args:
+		ids_to_be_tracked : a dictionary of callsign : IMEI items.
+		callsign : for self.logger into the APRS-IS server; but note that no password is used or needed since we're reading only, so it really could be anything valid.
+		addr: server address ['45.63.21.153']
+		port: server port [10152]
+		print_info_every_x_seconds: period over which to print a bit more detailed recent count etc info [1.0]
+		calculate_mean_window_sec: winodw over which we calculate recent rate [60]
+		max_consecutive_data_loss: reset connections if we got no packets this many times [3]
 	"""
-	
+
 	version = 0.01
 	sock_block_len = 2**14
 	
-	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, **kwargs):
-		"""
-		ids_to_be_tracked : a dictionary of callsign : IMEI items.
-		callsign : for logging into the APRS-IS server; but note that no password is used or needed since we're reading only, so it really could be anything valid.
-		"""
+	def __init__(self, ids_to_be_tracked, callsign, addr = '45.63.21.153', port = 10152, print_info_every_x_seconds = 1.0, calculate_mean_window_sec = 60, max_consecutive_data_loss = 3, **kwargs):
 		self.addr = addr
 		self.port = port
-		self._buffer = ''
-		self.max_consecutive_data_loss =  kwargs.get('max_consecutive_data_loss', 3)
-		self._total_N_packets = 0
-		self.data_loss_counter = 0
+		self.print_info_every_x_seconds = print_info_every_x_seconds
+		self.calculate_mean_window_sec = calculate_mean_window_sec
+		self.max_consecutive_data_loss =  max_consecutive_data_loss
 		super(APRSIS2GPRAW, self).__init__(ids_to_be_tracked, callsign, **kwargs)
-		logging.info('Connecting to {:}:{:}'.format(self.addr, self.port))
-		
+		self.logger.info('Connecting to %s:%s', self.addr, self.port)
+
+	def reset(self):
+		super().reset()
+		self._buffer = ''
+		self._total_N_packets = 0
+		self._packet_count_bubffer = deque([], maxlen = 1000) # use to calculate mean rates; should be deep enough that we exclude based on age, but limit to avoid memory issues.
+		self.data_loss_counter = 0
+
 	def prepare_connection(self, **kwargs):
 		self.raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.raw_socket.connect((self.addr, self.port))
 		self.raw_socket.setblocking(True)
 		self.raw_socket.settimeout(2)
 		time.sleep(0.1)
-		logging.info('server greeting : *{:}*'.format(self.raw_socket.recv(10000).decode('utf-8')))
+		self.logger.info('server greeting : *%s*', self.raw_socket.recv(10000).decode('utf-8'))
 		time.sleep(0.1)
 		# casualty of 2 to 3 conversion; this is no longer ok (whether it ever was a good idea is another question)
 		#self.raw_socket.sendall(b'user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version))
 		self.raw_socket.sendall(bytearray('user {:} pass -1 vers {:} {:}\n\r'.format(self.callsign, self.__class__.__name__, self.version),encoding="utf-8", errors="strict"))
-		logging.info('ack : *{:}*'.format(self.raw_socket.recv(10000).decode('utf-8').split('\r\n')[0]))
+		self.logger.info('ack : *%s*', self.raw_socket.recv(10000).decode('utf-8').split('\r\n')[0])
 		self.raw_socket.settimeout(kwargs.get('socket_timeout', self.wait_between_checks * 2))  # fudge factor.
 	
 	def cleanup(self, **kwargs):
@@ -321,7 +442,7 @@ class APRSIS2GPRAW(APRSIS2GP):
 		self.close_connection()
 	
 	def close_connection(self):
-		logging.info('closing socket')
+		self.logger.info('closing socket')
 		self.raw_socket.close()
 		
 	def get_loc(self):
@@ -332,25 +453,29 @@ class APRSIS2GPRAW(APRSIS2GP):
 			self._buffer = pre_data[-1]
 			data = pre_data[:-1]
 			now = time.time()
+			# add the recent count, then filter
+			self._packet_count_bubffer.append((len(data), time.time()))
+			while time.time() - self._packet_count_bubffer[0][1] > self.calculate_mean_window_sec:
+				self._packet_count_bubffer.popleft()
+			self.logger.debug('%0d packets in mean rate calculation buffer', len(self._packet_count_bubffer))
 			self._total_N_packets += len(data)
 			if now - self.last_print > self.print_info_every_x_seconds:
 				self.last_print = now
-				# TODO drop the dt?
-				logging.info('dt = {:0.1f} sec, N_packets {:0d}, mean rate {:0.2f} packets / sec'.format(now - self.start_time, len(data), self._total_N_packets / (time.time() - self.start_time)))
+				self.logger.info('Got %0d packets, overall mean rate %0.2f packets / sec over %0d sec, over last %0.1f sec mean rate = %0.2f packets / sec', len(data), self._total_N_packets / (time.time() - self.start_time), time.time() - self.start_time, self.calculate_mean_window_sec, sum([x[0] for x in self._packet_count_bubffer]) /  (self._packet_count_bubffer[-1][1] - self._packet_count_bubffer[0][1]))
 			for packet_i, packet in enumerate(data):
 				self.filter_callsigns(packet, packet_i = packet_i)
 			if len(data) < 2: # 1?
 				self.data_loss_counter += 1
-				logging.warning('Got no data for last {:0d} cycles'.format(self.data_loss_counter))
+				self.logger.warning('Got no data for last %0d cycles', self.data_loss_counter)
 				if self.data_loss_counter >= self.max_consecutive_data_loss:
-					logging.error('got too little data for too many consecutive cycles (> {:0d}), resetting socket'.format(self.max_consecutive_data_loss))
+					self.logger.error('got too little data for too many consecutive cycles (> %0d), resetting socket', self.max_consecutive_data_loss)
 					self.close_connection()
 					time.sleep(1.0)
 					self.prepare_connection()
 			else:
 				self.data_loss_counter = 0
 		except socket.error as e:
-			logging.error('Socket exception {:}, resetting connection'.format(e))
+			self.logger.error('Socket exception %s, resetting connection', e)
 			# we could try closing it, but i'm not sure there's much point - let GC handle that.
 			self.prepare_connection()
 			
@@ -401,14 +526,14 @@ class APRSFI2GP(APRSBase):
 		for group_i in range(self.N_id_groups):
 			try:
 				callsign_group = ','.join(self.ids_to_be_tracked.keys()[group_i : group_i + 20])
-				logging.debug(callsign_group)
+				self.logger.debug(callsign_group)
 				res = requests.get('https://api.aprs.fi/api/get?name={:}&what=loc&apikey={:}&format=json'.format(callsign_group, self.aprs_api_key))
-				logging.debug(res.url)
+				self.logger.debug(res.url)
 				res.raise_for_status()
-				logging.debug('got\n*%s*' % res.json())
+				self.logger.debug('got\n*%s*', res.json())
 				self.locations.extend(res.json()['entries'])
 			except Exception as e:
-				logging.debug('get_loc - failed due to %s' % e)
+				self.logger.debug('get_loc - failed due to *%s*', e)
 
 
 def main():
@@ -419,7 +544,7 @@ other options available in module.
 ''', formatter_class= argparse.RawTextHelpFormatter)
 	parser.add_argument('config', type = str, default = '',
 			help= '''
-json config file - must have 
+json config file - must have
 callsign - string
 ids - a dictionary of 'from' aprs packet : IMEI identifiers
 optional {:}'''.format(_USABLE_KEYWORDS))
