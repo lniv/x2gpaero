@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 """
 move aprs data onto glideport.aero
 
@@ -29,12 +29,13 @@ from collections import deque
 from functools import wraps
 import argparse
 import aprslib
+from requests.exceptions import ConnectTimeout
 
 _DEBUG = False
 _LOG_ALL = False
 _UPLOAD = True # set to False for debugging, so it doesn't actually interact with glideport.aero, but one can see what would have been uploaded etc
 
-_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'calculate_mean_window_sec', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay']
+_USABLE_KEYWORDS = ['verbose', 'wait_between_checks', 'max_wait_between_checks', 'max_consecutive_data_loss', 'socket_timeout', 'print_info_every_x_seconds', 'print_stats_every_x_seconds', 'print_monitor_every_x_seconds', 'calculate_mean_window_sec', 'min_packet_dt', 'N_last_packets', 'socket_timeout', 'delay', 'max_packets', 'glideport_timeout_sec']
 
 
 def config_file_reader(filename):
@@ -92,10 +93,12 @@ class APRSBase(object):
 		N_last_packets: length of buffer kept for packet deduplication [5]
 		wait_between_checks: nominal time to wait after getting and processing one set of packets [1.0]
 		min_packet_dt: [10.0]
+		max_packets: limit to number of packets retained for transmission to glideport [5000]
+		glideport_timeout_sec: timeout limit when uploading [5.0]
 	'''
 
 	@create_attr_from_args
-	def __init__(self, ids_to_be_tracked, verbose = False, print_stats_every_x_seconds = 600, print_monitor_every_x_seconds = 2**64 -1, max_wait_between_checks = 1800.0, N_last_packets = 5, wait_between_checks = 1.0, min_packet_dt = 10.0, **kwargs):
+	def __init__(self, ids_to_be_tracked, verbose = False, print_stats_every_x_seconds = 600, print_monitor_every_x_seconds = 2**64 -1, max_wait_between_checks = 1800.0, N_last_packets = 5, wait_between_checks = 1.0, min_packet_dt = 10.0, max_packets = 5000, glideport_timeout_sec = 5.0, **kwargs):
 		"""
 		ids : a dictionary of callsign : IMEI items.
 		"""
@@ -145,7 +148,7 @@ class APRSBase(object):
 		self.last_print = 0
 		self.last_stats_print = 0
 		
-		self.locations = []
+		self.locations = deque(maxlen = self.max_packets)
 		self.wait_between_checks = self.default_wait_between_checks
 		self.recent_packets = {k : deque([], maxlen = self.N_last_packets) for k in self.ids_to_be_tracked}
 		# accept new packet only after min_packet_dt seconds since last valid one.
@@ -237,8 +240,7 @@ class APRSBase(object):
 		# from BB's code
 		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
 		# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
-		
-		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict)
+		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict, timeout = self.glideport_timeout_sec)
 		r.raise_for_status()
 		self.logger.info('Received %s', r.text)
 	
@@ -266,21 +268,35 @@ class APRSBase(object):
 
 
 		"""
-		if len(self.locations) > 0:
+		if len(self.locations) == 0:
+			return
+		else:
 			self.logger.debug('sending %0d locations', len(self.locations))
-		
-		for entry in self.locations:
+
+		failed_packets = []
+		N_packets_to_upload = len(self.locations)
+		entry_i = 0
+		while len(self.locations) > 0:
+			entry_i += 1
 			try:
+				entry = self.locations.popleft()
 				json_dict = {'Version' : 2.0,
 					'Events' : [{'imei' : self.ids_to_be_tracked[entry['srccall']],
 								'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
 								'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
 					}
 				self.upload_packet_to_gpaero(json_dict)
+			except ConnectTimeout:
+				self.locations.append(entry)
+				self.logger.warning('timed out on connection at packet %0d/%0d; keeping this and remaining packets (%0d) and aborting this upload', entry_i + 1, N_packets_to_upload, len(self.locations) + 1)
+				break
 			except Exception as e:
-				self.logger.warning('send_locations failed due to *%s* raw : %s', e, entry)
-		self.locations = []
-		
+				self.logger.warning('send_locations failed at packet %0d/%0d due to *%s* raw : %s', entry_i +1, N_packets_to_upload, e, entry)
+				failed_packets.append(entry)
+		self.locations.extend(failed_packets)
+		if len(self.locations) > 0:
+			self.logger.info('Have %0d packets left after sending locations', len(self.locations))
+
 
 class APRSIS2GP(APRSBase):
 	"""
