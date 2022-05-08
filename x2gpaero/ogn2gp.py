@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 """
 handle ogn to gpaero; it's really aprs as well, so it makes some sense 
 for it to live in the same rpository.
