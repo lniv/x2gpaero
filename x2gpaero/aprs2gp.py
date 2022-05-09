@@ -137,11 +137,11 @@ def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec):
 			upload_packet_to_gpaero(logger, packet_to_upload, glideport_timeout_sec)
 			packets_stats[imei]['success'] += 1
 		except ConnectTimeout:
-			self.logger.warning('timed out on connection, shoving packet back to end of queue')
-			self.packets_queue.put(packet_to_upload)
+			logger.warning('timed out on connection, shoving packet back to end of queue')
+			packets_queue.put(packet_to_upload)
 			packets_stats[imei]['timedout'] += 1
 		except Exception as e:
-			self.logger.warning('failed to upload due to *%s*,dropping packet %s', e, packet_to_upload)
+			logger.warning('failed to upload due to *%s*,dropping packet %s', e, packet_to_upload)
 			packets_stats[imei]['failed'] += 1
 	logger.info('exited upload loop')
 	print_imei_upload_stats(packets_stats, prefix = 'final upload_stats')
