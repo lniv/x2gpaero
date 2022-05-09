@@ -25,8 +25,10 @@ import requests
 import json
 import tempfile
 import inspect
-from collections import deque
+from collections import deque, defaultdict
 from functools import wraps
+from queue import Queue
+from threading import Thread
 import argparse
 import aprslib
 from requests.exceptions import ConnectTimeout
@@ -80,6 +82,71 @@ def create_attr_from_args(func):
 	return wrapper
 
 
+def upload_packet_to_gpaero(logger, json_dict, glideport_timeout_sec):
+	"""
+	Uses the push method
+	there are other methods meant for higher frequency fixes - GlideTrak protocol.
+	i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
+	"""
+	if not _UPLOAD:
+		logger.info('would upload, but skipping %s', json_dict)
+		return
+	logger.info('Uploading %s', json_dict)
+	# from BB's code
+	#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
+	# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
+	r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict, timeout = glideport_timeout_sec)
+	r.raise_for_status()
+	logger.info('Received %s', r.text)
+
+
+def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec):
+	'''
+	an uploader that is meant to run in a separate thread, consuming packets that are to be sent to glideport.aero
+	will stop only when we consume a packet of 'stop'.
+	Args:
+		packets_queue: a queue.Queue FIFO
+		glideport_timeout_sec: pass to uploader, handle exeeption
+		print_every_n_sec: print stats this often.
+	'''
+
+	def print_imei_upload_stats(packets_stats, prefix = 'upload_stats'):
+		for imei, v in packets_stats.items():
+			logger.info(f'{prefix} of {imei} : {v}')
+
+	logger = logging.getLogger('Uploader')
+	logger.info('entering loop')
+	packets_stats = defaultdict(lambda : dict({'success' : 0, 'failed' : 0, 'timedout' : 0}))
+	last_print_t = time.time()
+	while True:
+		packet_to_upload = packets_queue.get()
+		if packet_to_upload == 'stop':
+			logger.info('got a stop request')
+			break
+		# any normal packet will have this structure, and we can get an imei for our stats.
+		# defactor assuming here i'm getting packets for a single IMEI, but i did write both sides...
+		try:
+			imei = packet_to_upload['Events'][0]['imei']
+		except KeyError:
+			logger.warning('could not get IMEI from packet : *%s*, badly formed? skipping', packet_to_upload)
+			continue
+		if time.time() - last_print_t > print_every_n_sec:
+			last_print_t = time.time()
+			print_imei_upload_stats(packets_stats)
+		try:
+			upload_packet_to_gpaero(logger, packet_to_upload, glideport_timeout_sec)
+			packets_stats[imei]['success'] += 1
+		except ConnectTimeout:
+			self.logger.warning('timed out on connection, shoving packet back to end of queue')
+			self.packets_queue.put(packet_to_upload)
+			packets_stats[imei]['timedout'] += 1
+		except Exception as e:
+			self.logger.warning('failed to upload due to *%s*,dropping packet %s', e, packet_to_upload)
+			packets_stats[imei]['failed'] += 1
+	logger.info('exited upload loop')
+	print_imei_upload_stats(packets_stats, prefix = 'final upload_stats')
+
+
 class APRSBase(object):
 	
 	'''
@@ -115,6 +182,7 @@ class APRSBase(object):
 		except subprocess.CalledProcessError:
 			self.logger.warning('cannot log git status')
 		self.reset()
+		self.packets_queue = Queue(maxsize = self.max_packets)
 		self.logger.info('kwargs = %s', kwargs)
 		for aprs_id, IMEI in self.ids_to_be_tracked.items():
 			self.logger.info('Tracking %s : %s', aprs_id, IMEI)
@@ -182,7 +250,11 @@ class APRSBase(object):
 		any actions deemed prudent when stopping monitoring
 		"""
 		self.log_stats()
-	
+		self.packets_queue.put('stop')
+		if hasattr(self, 'upload_thread'):
+			self.logger.info('joining upload thread')
+			self.upload_thread.join(timeout = 10.0) # this really shouldn't take long, but give it a bit of time just in case.
+
 	def monitor(self):
 		"""
 		monitor the service every N seconds.
@@ -193,6 +265,9 @@ class APRSBase(object):
 		
 		self.start_time = time.time()
 		self.last_print = self.start_time
+		# start the upload thread
+		self.upload_thread = Thread(target = packet_uploader, daemon = True, args =(self.packets_queue, self.glideport_timeout_sec, self.print_stats_every_x_seconds))
+		self.upload_thread.start()
 		while True:
 			now = time.time()
 			try:
@@ -201,10 +276,12 @@ class APRSBase(object):
 				time.sleep(self.wait_between_checks)
 				# reset wait if successful.
 				self.wait_between_checks = self.default_wait_between_checks
+				if not self.upload_thread.is_alive():
+					self.logger.warning('found upload thread to be dead, aborting!')
+					break
 			except KeyboardInterrupt:
 				self.logger.info('stopping upon request')
 				self.logger.info('Logged to %s', self.log_filename)
-				self.cleanup()
 				break
 			except Exception as e:
 				if self.wait_between_checks > self.max_wait_between_checks:
@@ -225,24 +302,7 @@ class APRSBase(object):
 					self.logger.info('monitor dt = %0.1f sec', time.time() - self.start_time)
 			except Exception as e:
 				self.logger.error('Failed to log misc info due to %s', e)
-	
-	def upload_packet_to_gpaero(self, json_dict):
-		"""
-		Uses the push method
-		there are other methods meant for higher frequency fixes - GlideTrak protocol.
-		i may branch these later to use those, or refactor the code a bit, or not bother - i suspect that as long as we're closer to a spot / inreach in terms of fix frequency, it all works well.
-		"""
-		if not _UPLOAD:
-			self.logger.info('would upload, but skipping %s', json_dict)
-			return
-		
-		self.logger.info('Uploading %s', json_dict)
-		# from BB's code
-		#curl -H "Accept: application/json" -H "Content-Type: application/json" -d @json_file http://glideport.aero/spot/ir_push.php
-		# Note that the user has to have added  ir_push:IMEI (With the/ a(?) correct IMEI)
-		r = requests.post('http://glideport.aero/spot/ir_push.php', json=json_dict, timeout = self.glideport_timeout_sec)
-		r.raise_for_status()
-		self.logger.info('Received %s', r.text)
+		self.cleanup()
 	
 	def send_locations(self):
 		"""
@@ -250,8 +310,7 @@ class APRSBase(object):
 		convert ids to IMEI
 		create json for uploading to gpaero
 		save json to local log file
-		send to gpaero.
-		clear the locations once uploaded
+		put on the queue for uploading by second thread.
 		
 		sample json file : 
 		{"Version": "2.0", "Events": [{
@@ -276,6 +335,7 @@ class APRSBase(object):
 		failed_packets = []
 		N_packets_to_upload = len(self.locations)
 		entry_i = 0
+		# could revert to a for loop, but keep it.
 		while len(self.locations) > 0:
 			entry_i += 1
 			try:
@@ -285,11 +345,7 @@ class APRSBase(object):
 								'timeStamp' : int( 1000 * entry['time']),  #  seems BB's code converts to integer in msec, so copying that.
 								'point' : {'latitude' : entry['lat'], 'longitude' : entry['lng'], 'altitude' : entry['altitude']},},]
 					}
-				self.upload_packet_to_gpaero(json_dict)
-			except ConnectTimeout:
-				self.locations.append(entry)
-				self.logger.warning('timed out on connection at packet %0d/%0d; keeping this and remaining packets (%0d) and aborting this upload', entry_i + 1, N_packets_to_upload, len(self.locations) + 1)
-				break
+				self.packets_queue.put(json_dict)
 			except Exception as e:
 				self.logger.warning('send_locations failed at packet %0d/%0d due to *%s* raw : %s', entry_i +1, N_packets_to_upload, e, entry)
 				failed_packets.append(entry)
