@@ -29,6 +29,7 @@ from collections import deque, defaultdict
 from functools import wraps
 from queue import Queue
 from threading import Thread
+from numpy.random import uniform
 import argparse
 import aprslib
 from requests.exceptions import ConnectTimeout
@@ -100,7 +101,7 @@ def upload_packet_to_gpaero(logger, json_dict, glideport_timeout_sec):
 	logger.info('Received %s', r.text)
 
 
-def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec):
+def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec, base_timeout_delay = 0.05):
 	'''
 	an uploader that is meant to run in a separate thread, consuming packets that are to be sent to glideport.aero
 	will stop only when we consume a packet of 'stop'.
@@ -108,15 +109,18 @@ def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec):
 		packets_queue: a queue.Queue FIFO
 		glideport_timeout_sec: pass to uploader, handle exeeption
 		print_every_n_sec: print stats this often.
+		base_timeout_delay: the delay on the first timeout
 	'''
 
 	def print_imei_upload_stats(packets_stats, prefix = 'upload_stats'):
+		logger.info(f'{prefix} queue N = {packets_queue.qsize():0d}')
 		for imei, v in packets_stats.items():
 			logger.info(f'{prefix} of {imei} : {v}')
 
 	logger = logging.getLogger('Uploader')
 	logger.info('entering loop')
 	packets_stats = defaultdict(lambda : dict({'success' : 0, 'failed' : 0, 'timedout' : 0}))
+	upload_delay = base_timeout_delay
 	last_print_t = time.time()
 	while True:
 		packet_to_upload = packets_queue.get()
@@ -136,8 +140,12 @@ def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec):
 		try:
 			upload_packet_to_gpaero(logger, packet_to_upload, glideport_timeout_sec)
 			packets_stats[imei]['success'] += 1
+			upload_delay = base_timeout_delay
 		except ConnectTimeout:
-			logger.warning('timed out on connection, shoving packet back to end of queue')
+			# i expect this is a global failure of the server we're talking to, not of a specific packet, so we just have to wait.
+			logger.warning('timed out on connection, shoving packet back to end of queue (N = %0d), and waiting %0.2f sec', packets_queue.qsize() + 1, upload_delay)
+			time.sleep(upload_delay)
+			upload_delay *= uniform(low=1.0, high=2.0)  # some randomness
 			packets_queue.put(packet_to_upload)
 			packets_stats[imei]['timedout'] += 1
 		except Exception as e:

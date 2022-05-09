@@ -67,24 +67,27 @@ def test_upload_queue():
 
 	for description, post_f, expected_q_size in  (\
 				('good packet upload', partial(fake_post, good_response = True, timing_out = False), 0),
-				('packet always timing out', partial(fake_post, good_response = True, timing_out = True), 1),
+				('packet always timing out', partial(fake_post, good_response = True, timing_out = True), 3),
 				('packet raising error', partial(fake_post, good_response = False, timing_out = False), 0)):
 
 		print(f'\n\ntesting {description}')
 		packets_queue = Queue(maxsize = 7)
 		aprs2gp.requests.post = post_f
 
-		fake_upload_thread = Thread(target = aprs2gp.packet_uploader, daemon = True, args =(packets_queue, 5.0, 2.0))
+		# using a very short upload delay (0.01) to get a few cycles from the timing out case; it's harmless for the others.
+		fake_upload_thread = Thread(target = aprs2gp.packet_uploader, daemon = True, args =(packets_queue, 5.0, 2.0, 0.01))
 		fake_upload_thread.start()
 
 		# this should be ignored; log message, but that's it.
 		packets_queue.put({'a' : 0, 'v' : 2})
-		# this, should not.
+		# this, should not. (and make it a double)
 		packets_queue.put({'Version' : 2.0, 'Events' : [{'imei' : 7, 'blah' : 888},]})
+		packets_queue.put({'Version' : 2.0, 'Events' : [{'imei' : 7, 'blah' : 889},]})
+		packets_queue.put({'Version' : 2.0, 'Events' : [{'imei' : 7, 'blah' : 890},]})
 
 		time.sleep(2)
 		packets_queue.put('stop')
-		fake_upload_thread.join(timeout = 2)
+		fake_upload_thread.join(timeout = 5)  # timed so i can see the stop on the one where we're timing out.
 		assert packets_queue.qsize() == expected_q_size, f'expected to have {expected_q_size} in queue but have {packets_queue.qsize()}'
 
 	print('clean up')
