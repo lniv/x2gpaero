@@ -239,17 +239,18 @@ class APRSBase(object):
 		'''
 		return timestamp
 
-	def log_stats(self):
+	def log_stats(self, prefix = 'packet_stats'):
 		'''
 		pretty print some overall statistics
 		'''
-		self.logger.info('packet stats : %s', self.packet_stats)
+		for owner_id, v in self.packet_stats.items():
+			self.logger.info(f'{prefix} {owner_id}: {v}')
 
 	def cleanup(self, **kwargs):
 		"""
 		any actions deemed prudent when stopping monitoring
 		"""
-		self.log_stats()
+		self.log_stats(prefix = 'final packet stats')
 		self.packets_queue.put('stop')
 		if hasattr(self, 'upload_thread'):
 			self.logger.info('joining upload thread')
