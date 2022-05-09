@@ -6,15 +6,15 @@ note - for various reasons it's annoying to actually install pytest, requests-mo
 from functools import partial
 import requests
 
-def fake_post(url, json=None, timeout = None, good_response = True, timing_out = False):
+def fake_post(url, json=None, timeout = None, response_status = 200, raising = None):
 	'''
 	fake requests.post
 	'''
-	print(f'faking connecttion to {url} with json={json} and timeout = {timeout}; should be good = {good_response}, shoudl we time out = {timing_out}')
+	print(f'faking connecttion to {url} with json={json} and timeout = {timeout}; response_status = {response_status}, raising = {raising}')
 	mock_response = requests.Response()
-	mock_response.status_code = 200 if good_response else 404
-	if timing_out:
-		raise requests.exceptions.ConnectTimeout
+	mock_response.status_code = response_status
+	if raising is not None:
+		raise raising('tis just a cratch')
 	return mock_response
 
 
@@ -27,19 +27,19 @@ def test_uploader():
 	original_post = aprs2gp.requests.post
 	
 	print('trying a good one')
-	aprs2gp.requests.post = partial(fake_post, good_response = True, timing_out = False)
+	aprs2gp.requests.post = partial(fake_post, response_status = 200, raising = None)
 	
 	aprs2gp.upload_packet_to_gpaero(logging.getLogger('test'), {'x' : 4}, 5.0)
 	
 	print('and now a bad response')
-	aprs2gp.requests.post = partial(fake_post, good_response = False, timing_out = False)
+	aprs2gp.requests.post = partial(fake_post, response_status = 404, raising = None)
 	try:
 		aprs2gp.upload_packet_to_gpaero(logging.getLogger('test'), {'x' : 4}, 5.0)
 	except requests.exceptions.HTTPError:
 		print('ok')
 
 	print('and now faking timing out')
-	aprs2gp.requests.post = partial(fake_post, good_response = True, timing_out = True)
+	aprs2gp.requests.post = partial(fake_post, response_status = 200, raising = requests.exceptions.ConnectTimeout)
 	try:
 		aprs2gp.upload_packet_to_gpaero(logging.getLogger('test'), {'x' : 4}, 5.0)
 	except requests.exceptions.ConnectTimeout:
@@ -66,9 +66,10 @@ def test_upload_queue():
 	original_post = aprs2gp.requests.post
 
 	for description, post_f, expected_q_size in  (\
-				('good packet upload', partial(fake_post, good_response = True, timing_out = False), 0),
-				('packet always timing out', partial(fake_post, good_response = True, timing_out = True), 3),
-				('packet raising error', partial(fake_post, good_response = False, timing_out = False), 0)):
+				('good packet upload', partial(fake_post, response_status = 200, raising = None), 0),
+				('packet always timing out', partial(fake_post, response_status = 200, raising = requests.exceptions.ConnectTimeout), 3),
+				('packet having some other requests error',  partial(fake_post, response_status = 200, raising = requests.exceptions.RequestException), 3),
+				('packet raising error', partial(fake_post, response_status = None, raising = None), 0)):
 
 		print(f'\n\ntesting {description}')
 		packets_queue = Queue(maxsize = 7)

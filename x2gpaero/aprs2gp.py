@@ -32,7 +32,7 @@ from threading import Thread
 from numpy.random import uniform
 import argparse
 import aprslib
-from requests.exceptions import ConnectTimeout
+from requests.exceptions import ConnectTimeout, RequestException
 
 _DEBUG = False
 _LOG_ALL = False
@@ -141,9 +141,9 @@ def packet_uploader(packets_queue, glideport_timeout_sec, print_every_n_sec, bas
 			upload_packet_to_gpaero(logger, packet_to_upload, glideport_timeout_sec)
 			packets_stats[imei]['success'] += 1
 			upload_delay = base_timeout_delay
-		except ConnectTimeout:
+		except (ConnectTimeout, RequestException) as e:
 			# i expect this is a global failure of the server we're talking to, not of a specific packet, so we just have to wait.
-			logger.warning('timed out on connection, shoving packet back to end of queue (N = %0d), and waiting %0.2f sec', packets_queue.qsize() + 1, upload_delay)
+			logger.warning('*%s* happened on connection, shoving packet back to end of queue (N = %0d), and waiting %0.2f sec', repr(e), packets_queue.qsize() + 1, upload_delay)
 			time.sleep(upload_delay)
 			upload_delay *= uniform(low=1.0, high=2.0)  # some randomness
 			packets_queue.put(packet_to_upload)
