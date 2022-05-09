@@ -205,7 +205,7 @@ class APRSBase(object):
 		sh = logging.StreamHandler()
 		for handle in (fh, sh):
 			# set up message and time formatting
-			handle.setFormatter(logging.Formatter('%(asctime)s %(levelname)-8s %(message)s', '%Y_%m_%d_%H_%M_%S'))
+			handle.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)-8s %(message)s', '%Y_%m_%d_%H_%M_%S'))
 			rlogger.addHandler(handle)
 		self.logger = logging.getLogger('X2GP')
 		self.logger.info('Logging to %s', self.log_filename)
