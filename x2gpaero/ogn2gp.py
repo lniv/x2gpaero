@@ -10,7 +10,7 @@ TODO: see about pushing climb rate data; it's displayed in the gauges, so it wou
 
 import argparse
 from datetime import datetime
-from timezonefinder import TimezoneFinderL
+from timezonefinder import TimezoneFinder, TimezoneFinderL
 from pytz import timezone
 from x2gpaero.aprs2gp import APRSIS2GPRAW, config_file_reader, _USABLE_KEYWORDS
 from ogn.parser import parse as ogn_parse
@@ -36,20 +36,38 @@ class OGN2GPAero(APRSIS2GPRAW):
 	sock_block_len = 2**14
 
 	# i don't want to pay the startup time; i could have one per trace, but it's annoying, and loading all to memory should mean that we've predone the optimization.
-	tf = TimezoneFinderL(in_memory=True)
+	tf_light = TimezoneFinderL(in_memory=True)
+	tf_accurate = TimezoneFinder(in_memory=True)
 
-	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
+	def shift_time_based_on_local_dst(self, plane_id, timestamp, latitude, longitude):
 		'''
 		shift a given time stamp by a daylight saving's time amount if needed.
 		Args:
+			plane_id: the dictionary key for this plane - e.g. ICAO id
 			timestamp: i.e. integer number of seconds, typically time since epoch
 			latitude: latitude of point of interest, degrees
 			longitude: longitude of point of interest, degrees
 		Returns:
 			timestamp shifted by appropriate dst amount, typically zero or one hour.
 		'''
-		tz = timezone(self.tf.timezone_at(lat = latitude, lng = longitude))
-		return timestamp + tz.dst(datetime.utcfromtimestamp(timestamp)).total_seconds()
+		# check if this is a new flight; for now, see if local time is a different day than last info.
+		# note that this is not trivial, since i do need to know the time zone at that location, so we have
+		# to do double work - figure out a time zone quick, hope DST is not critical in this aspect
+		# (could bite me if someone takes off at 1am on clock change day, or an airport at a bad location)
+		# i really would like to use the full accuracy one, but this requires getting  it to reasonable speed on the pi.
+		approximate_tz = timezone(self.tf_light.timezone_at(lat = latitude, lng = longitude))
+		utc_of_timestamp = datetime.utcfromtimestamp(timestamp)
+		current_day = approximate_tz.fromutc(utc_of_timestamp).day
+		if current_day != self.last_id_info[plane_id]['day']:
+			self.logger.info(f'Found new flight for {plane_id}, day = {current_day}, last one was on {self.last_id_info[plane_id]["day"]}')
+			# now we need to get this right
+			accurate_tz = timezone(self.tf_accurate.timezone_at(lat = latitude, lng = longitude))
+			dst_shift = accurate_tz.dst(utc_of_timestamp).total_seconds()
+			self.logger.info('DST shift for {plane_id}, day {current_day} will be {dst_shift:0.1f} sec')
+			self.last_id_info[plane_id] = {'day' : current_day, 'dst_shift' : dst_shift}
+		else:
+			dst_shift = self.last_id_info[plane_id]['dst_shift']
+		return timestamp + dst_shift
 
 	def packet_parser(self, packet):
 		"""

@@ -179,6 +179,7 @@ class APRSBase(object):
 		"""
 		self.N_id_groups = len(self.ids_to_be_tracked.keys()) / 20 + 1
 		self.default_wait_between_checks = self.wait_between_checks
+		self.last_id_info = defaultdict(lambda : {'day' : None, 'dst_shift' : None})  # i don't actually need to define dst_shift, but i want it to be a bad value for addition, as a secondary check to avoid using uninitialized values.
 		self.setup_loggers()
 		try:
 			self.logger.info('git branch %s', subprocess.check_output(['git', 'branch', '-v']).decode('utf-8').split('\n')[0] )
@@ -234,11 +235,12 @@ class APRSBase(object):
 	def get_loc(self):
 		raise NotImplementedError
 
-	def shift_time_based_on_local_dst(self, timestamp, latitude, longitude):
+	def shift_time_based_on_local_dst(self, plane_id, timestamp, latitude, longitude):
 		'''
 		shift a time stamp based on local daylight saving time.
 		stub meant to be overloaded if needed - as is apparently the case for OGN.
 		Args:
+			plane_id: the dictionary key for this plane - e.g. ICAO id or callsign
 			timestamp: seconds since epoch
 			latitude: position, degrees
 			longitude: degrees
@@ -440,7 +442,7 @@ class APRSIS2GP(APRSBase):
 					# i seem to have an issue with OGN and daylight saving time.
 					# however, the place to fix it is post filtering / selection, so it's here - the default fix method is a passthrough.
 					# shift timestamp \after\ i save the recent packet time - so i only change what's uploaded, not the local time stamping.
-					timestamp= self.shift_time_based_on_local_dst(timestamp, ppac['latitude'], ppac['longitude'])
+					timestamp= self.shift_time_based_on_local_dst(ppac['from'], timestamp, ppac['latitude'], ppac['longitude'])
 					self.logger.info('Adding packet : %s', ppac)
 					self.locations.append({'srccall' : ppac['from'],
 								'lng' : ppac['longitude'],
